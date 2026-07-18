@@ -1,0 +1,18 @@
+# GSD planning artifacts (ephemeral, local-only)
+.planning/
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+build/
+*.log
+
+# SQLite (source of truth lives on the box, not in repo)
+*.sqlite
+*.sqlite3
+*.db
