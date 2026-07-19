@@ -1,7 +1,8 @@
 import { test, expect } from "vitest";
 import { openDb, type MeiliLineDoc } from "@cs-patchnotes/shared";
 import type { Meilisearch } from "meilisearch";
-import { ensureIndexAndSettings, reindexFromSqlite } from "../src/reindex.js";
+import { ensureIndexAndSettings, reindexFromSqlite, rebuild } from "../src/reindex.js";
+import { COMMANDS } from "../src/cli.js";
 
 /**
  * A structural stand-in for the Meilisearch client that records every settings
@@ -141,4 +142,43 @@ test("ensureIndexAndSettings registers searchable, sortable, and filterable attr
   expect(state.searchable).toEqual(["text", "title", "section"]);
   expect(state.sortable).toEqual(["posted_at"]);
   expect(state.filterable).toEqual(["game", "posted_at"]);
+});
+
+test("rebuild deletes, then applies settings, then loads — in that order", async () => {
+  const db = openDb(":memory:");
+  seed(db);
+  const { client, state } = makeStubClient();
+
+  await rebuild(client, db);
+
+  const firstDelete = state.order.indexOf("delete");
+  const firstSettings = state.order.indexOf("settings");
+  const firstLoad = state.order.indexOf("load");
+
+  expect(firstDelete).toBe(0);
+  expect(firstDelete).toBeLessThan(firstSettings);
+  expect(firstSettings).toBeLessThan(firstLoad);
+  db.close();
+});
+
+test("two consecutive rebuilds over the same SQLite data emit identical document sets", async () => {
+  const db = openDb(":memory:");
+  seed(db);
+
+  const first = makeStubClient();
+  await rebuild(first.client, db);
+
+  const second = makeStubClient();
+  await rebuild(second.client, db);
+
+  // The disposable index is fully reproducible from the source of truth: no
+  // network fetch, so the emitted documents are byte-for-byte identical.
+  expect(second.state.batches.flat()).toEqual(first.state.batches.flat());
+  db.close();
+});
+
+test("cli wires all four subcommands: poll, parse, reindex, rebuild", () => {
+  expect(Object.keys(COMMANDS).sort()).toEqual(["parse", "poll", "rebuild", "reindex"]);
+  expect(COMMANDS.reindex).toEqual({ module: "./reindex.js", runner: "runReindex" });
+  expect(COMMANDS.rebuild).toEqual({ module: "./reindex.js", runner: "runRebuild" });
 });
