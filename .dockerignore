@@ -1,0 +1,19 @@
+# Keep secrets and cruft out of the build context and image layers.
+# .env / .env.* must never enter an image layer (leaking secrets into the built image).
+# .env.example is intentionally NOT excluded (only .env and .env.* match below),
+# though the build does not need it either way.
+.env
+.env.*
+
+# VCS + planning artifacts
+.git
+.gitignore
+.planning
+
+# Vendored + build output (reinstalled/rebuilt inside the image)
+node_modules
+dist
+build
+
+# Logs
+*.log

@@ -1,0 +1,25 @@
+{
+  "name": "cs-patchnotes",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "dev": "npm run dev -w packages/api",
+    "check:secrets": "bash scripts/check-no-secrets.sh",
+    "check:meili-port": "bash scripts/check-no-meili-port.sh",
+    "check:infra": "npm run check:secrets && npm run check:meili-port"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsx": "^4",
+    "typescript": "^5.9",
+    "vitest": "^3"
+  }
+}

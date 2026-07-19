@@ -137,7 +137,40 @@ A searchable archive of every Counter-Strike patch note (CS:GO + CS2), with full
 
 ## Conventions
 
-Conventions not yet established. Will populate as patterns emerge during development.
+### No ephemeral planning references in committed code, PRs, or issues
+
+Committed source, config, scripts, pull request titles/descriptions, and
+GitHub issues must never reference GSD planning-cycle identifiers in
+comments, strings, filenames, env files, or prose. This covers phase/plan
+references ("Phase 0", "00-01"), decision references ("D-08"), requirement
+references ("OPS-01"), and research references ("Pitfall 3").
+
+**Why:** Planning is ephemeral and re-numberable (`.planning/` is git-ignored,
+`commit_docs: false`); the codebase is not. A comment like `// added in Phase 1`
+or `// per D-08` goes stale the moment phases get reordered, decisions get
+revised, or requirements get renumbered — and a reader with no access to
+`.planning/` can't resolve the reference to anything.
+
+**Instead:** Describe the technical rationale in plain English — what has to
+be true and why, not which planning artifact says so. Prefer "added once
+`packages/pipeline` exists" over "added in Phase 1"; prefer "Meilisearch must
+never be reachable from outside the compose network" over "Meilisearch is
+private (OPS-01)". PR/issue section headers should describe subsystems or
+outcomes ("Docker image + compose stack"), not plan IDs ("Plan 00-02").
+
+**Applies to:** All git-tracked files, plus PR and issue titles/descriptions.
+Does not apply to `.planning/` itself (gitignored) or to threat-model IDs
+using a phase-number prefix as a stable ID scheme (e.g. `T-00-01`) rather than
+a narrative reference — those are durable audit-trail identifiers, not
+planning-cycle pointers.
+
+**Enforcement:** Before committing, grep for stray planning references outside
+`.planning/`:
+```bash
+git diff --cached --name-only | grep -v '^\.planning/' | xargs -r grep -inE '\bphase [0-9]|\bD-[0-9]{2}\b|\b(OPS|REQ)-[0-9]{2}\b|\bPitfall [0-9]+\b'
+```
+
+See `.planning/CONVENTIONS.md` for full detail.
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
