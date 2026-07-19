@@ -1,0 +1,104 @@
+# Continuous integration and deployment.
+#
+# On every push and pull request the `verify` job builds, tests, and runs the
+# infrastructure guards (no committed secrets, no publicly published Meili port,
+# no Meili key in the browser bundle). On a push to the default branch the
+# `deploy` job additionally publishes the API image to GHCR and SSHes the VPS to
+# pull and start the stack.
+#
+# The single-file compose invocation (`-f docker-compose.yml`) is deliberate: it
+# keeps the local loopback-debug override out of the production deploy. The SPA is
+# NOT deployed here — Cloudflare Pages builds it from its own Git integration, so
+# no Cloudflare credentials live in this workflow.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least-privilege default; the deploy job widens `packages` to push to GHCR.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build, test, and infra guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build all workspaces
+        run: npm run build
+
+      - name: Lint all workspaces
+        run: npm run lint --workspaces --if-present
+
+      - name: Test all workspaces
+        run: npm test --workspaces --if-present
+
+      - name: Infrastructure guards
+        run: npm run check:infra
+
+  deploy:
+    name: Publish API image and deploy the stack
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-api
+          tags: |
+            type=sha
+            type=raw,value=latest
+
+      - name: Build and push the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/api/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Deploy the stack over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd ~/cs-patchnotes
+            docker compose -f docker-compose.yml --profile vps pull
+            docker compose -f docker-compose.yml --profile vps up -d

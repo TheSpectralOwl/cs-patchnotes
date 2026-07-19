@@ -1,24 +1,22 @@
 {
-  "name": "@cs-patchnotes/api",
+  "name": "@cs-patchnotes/pipeline",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/cli.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch src/cli.ts",
     "test": "vitest run",
-    "start": "node dist/index.js"
+    "start": "node dist/cli.js"
   },
   "dependencies": {
     "@cs-patchnotes/shared": "*",
-    "@fastify/cors": "^11.3",
-    "@fastify/helmet": "^13",
-    "fastify": "^5.10",
+    "better-sqlite3": "^12.11",
     "meilisearch": "^0.59",
     "zod": "^4.4"
   },
   "devDependencies": {
-    "pino-pretty": "^13"
+    "@types/better-sqlite3": "^7.6"
   }
 }

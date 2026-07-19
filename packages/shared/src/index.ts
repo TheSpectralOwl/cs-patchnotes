@@ -16,4 +16,10 @@ export type EnvVarName =
   | "TUNNEL_TOKEN"
   | "ANTHROPIC_API_KEY"
   | "PORT"
-  | "MEILI_HOST";
+  | "MEILI_HOST"
+  | "SQLITE_PATH"
+  | "WEB_ORIGIN";
+
+export * from "./types.js";
+export * from "./db/ids.js";
+export { openDb } from "./db/client.js";

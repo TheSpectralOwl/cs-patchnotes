@@ -36,6 +36,12 @@ COPY --from=build /app/packages/shared ./packages/shared
 COPY --from=build /app/packages/api/dist ./packages/api/dist
 COPY --from=build /app/packages/api/package.json ./packages/api/
 
+# Pre-create the shared SQLite mount point owned by the non-root runtime user, so
+# the empty `sqlite_data` named volume inherits `node` ownership on first mount.
+# Without this the volume mountpoint is created root-owned and uid 1000 cannot open
+# /data/patchnotes.db (the api reads the same file the poller writes).
+RUN mkdir -p /data && chown node:node /data
+
 # Run as the built-in non-root `node` user (uid 1000) — mitigates privilege
 # escalation if the process is compromised (T-00-05).
 USER node
