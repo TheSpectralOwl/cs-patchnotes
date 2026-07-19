@@ -2,8 +2,8 @@
  * The single `pipeline` CLI entrypoint.
  *
  * One greppable dispatch: `pipeline <subcommand>` reads `process.argv` and runs
- * the matching stage. `poll` and `parse` are wired now; the `reindex | rebuild`
- * stages plug into the same registry in a later plan without touching callers.
+ * the matching stage. The full `poll | parse | reindex | rebuild` surface is
+ * wired here; each stage plugs into the same registry without touching callers.
  *
  * Each subcommand module is loaded lazily via a runtime `import()` so a single
  * invocation only pulls in the stage it needs (and stages can be added
@@ -14,6 +14,8 @@
  * (compose `env_file` / Node `--env-file` is the established pattern).
  */
 
+import { pathToFileURL } from "node:url";
+
 interface Subcommand {
   /** Relative module specifier (kept as a variable so it resolves at runtime). */
   module: string;
@@ -21,12 +23,14 @@ interface Subcommand {
   runner: string;
 }
 
-const COMMANDS: Record<string, Subcommand> = {
+export const COMMANDS: Record<string, Subcommand> = {
   poll: { module: "./poll.js", runner: "runPoll" },
   parse: { module: "./parse.js", runner: "runParse" },
+  reindex: { module: "./reindex.js", runner: "runReindex" },
+  rebuild: { module: "./reindex.js", runner: "runRebuild" },
 };
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const name = process.argv[2];
 
   if (!name || !(name in COMMANDS)) {
@@ -49,7 +53,18 @@ async function main(): Promise<void> {
   await run();
 }
 
-main().catch((err: unknown) => {
-  console.error(err);
-  process.exit(1);
-});
+/**
+ * Only dispatch when this module is the process entrypoint (`node dist/cli.js`).
+ * Guarding the auto-run keeps the command registry importable (e.g. by tests)
+ * without triggering a real dispatch + `process.exit`.
+ */
+const isDirectRun =
+  typeof process.argv[1] === "string" &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectRun) {
+  main().catch((err: unknown) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
