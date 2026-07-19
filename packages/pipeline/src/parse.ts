@@ -9,7 +9,7 @@ import { parseCs2Body } from "./parse/bbcode.js";
  *
  * Because it reads the stored raw body (never the network), the corpus can be
  * re-parsed at any time without re-fetching. IDs are deterministic ordinals
- * anchored on the Valve gid (`section.id = gid:idx`, `line.id = section:idx`),
+ * anchored on the Valve gid (`section.id = gid_idx`, `line.id = section_idx`),
  * so re-running upserts the same rows — no duplicates.
  */
 

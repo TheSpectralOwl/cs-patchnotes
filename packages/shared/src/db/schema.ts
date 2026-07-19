@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS updates (
 
 -- Sections = the [ HEADER ] splits within an update.
 CREATE TABLE IF NOT EXISTS sections (
-  id            TEXT PRIMARY KEY,   -- '{update_id}:{section_index}'
+  id            TEXT PRIMARY KEY,   -- '{update_id}_{section_index}'
   update_id     TEXT NOT NULL REFERENCES updates(id) ON DELETE CASCADE,
   section_index INTEGER NOT NULL,
   header        TEXT,               -- e.g. 'MAPS' (null = pre-header/untitled)
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS sections (
 
 -- Lines = individual note lines within a section. PRISTINE — no tags here.
 CREATE TABLE IF NOT EXISTS lines (
-  id          TEXT PRIMARY KEY,   -- '{section_id}:{line_index}'
+  id          TEXT PRIMARY KEY,   -- '{section_id}_{line_index}'
   section_id  TEXT NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
   update_id   TEXT NOT NULL REFERENCES updates(id) ON DELETE CASCADE,  -- denorm for query speed
   line_index  INTEGER NOT NULL,
