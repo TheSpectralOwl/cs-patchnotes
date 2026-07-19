@@ -26,7 +26,7 @@ export interface UpdateRow {
 
 /** A row in `sections` — a `[ HEADER ]` split within an update. */
 export interface SectionRow {
-  /** `${update_id}:${section_index}`. */
+  /** `${update_id}_${section_index}`. */
   id: string;
   update_id: string;
   section_index: number;
@@ -36,7 +36,7 @@ export interface SectionRow {
 
 /** A row in `lines` — one cleaned note line. Pristine; tags live elsewhere. */
 export interface LineRow {
-  /** `${section_id}:${line_index}`. */
+  /** `${section_id}_${line_index}`. */
   id: string;
   section_id: string;
   /** Denormalised from the parent section for query speed. */

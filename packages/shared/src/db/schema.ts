@@ -13,8 +13,8 @@
  *
  * Structural contract (never derive an ID from text):
  *   update.id  = Steam gid
- *   section.id = `${update_id}:${section_index}`
- *   line.id    = `${section_id}:${line_index}`
+ *   section.id = `${update_id}_${section_index}`
+ *   line.id    = `${section_id}_${line_index}`
  *
  * `raw_body` holds the pristine Steam `contents` verbatim so the corpus can be
  * re-parsed without re-fetching. Classification/tagging is a separate,

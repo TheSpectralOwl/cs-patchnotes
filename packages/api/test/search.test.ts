@@ -19,7 +19,7 @@ beforeEach(() => {
   searchMock.mockResolvedValue({
     hits: [
       {
-        id: "1:0:0",
+        id: "1_0_0",
         text: "grenade damage tweaked",
         title: "CS2 Update",
         posted_at: 1_700_000_000,

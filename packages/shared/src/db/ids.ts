@@ -7,8 +7,13 @@
  * from the note text or a body hash:
  *
  *   update.id  = gid
- *   section.id = `${update_id}:${section_index}`
- *   line.id    = `${section_id}:${line_index}`
+ *   section.id = `${update_id}_${section_index}`
+ *   line.id    = `${section_id}_${line_index}`
+ *
+ * The separator is `_` (not `:`) so a structural ID is a valid Meilisearch
+ * document primary key as-is: Meili keys allow only `[a-zA-Z0-9_-]`, so a colon
+ * would be rejected. Keeping the separator index-safe makes the source-of-truth
+ * ID and the index document ID identical — no transform layer, no drift.
  *
  * These ordinals are stable ONLY while the parser is deterministic: given the
  * same input, the parser must always emit sections and lines in the same order.
@@ -20,7 +25,7 @@
 export const updateId = (gid: string): string => gid;
 
 /** Composes a section ID from its parent update ID and its section ordinal. */
-export const sectionId = (updateId: string, i: number): string => `${updateId}:${i}`;
+export const sectionId = (updateId: string, i: number): string => `${updateId}_${i}`;
 
 /** Composes a line ID from its parent section ID and its line ordinal. */
-export const lineId = (sectionId: string, i: number): string => `${sectionId}:${i}`;
+export const lineId = (sectionId: string, i: number): string => `${sectionId}_${i}`;

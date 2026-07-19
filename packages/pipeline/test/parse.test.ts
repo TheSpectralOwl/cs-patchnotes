@@ -83,8 +83,8 @@ test("parsing is idempotent — identical section/line IDs and stable row counts
   expect(sectionsB).toEqual(sectionsA);
   expect(linesB).toEqual(linesA);
 
-  // IDs are structural ordinals anchored on gid: section 0 = "<gid>:0", line 0 = "<gid>:0:0".
-  expect(sectionsA[0]).toBe(`${cs2.gid}:0`);
-  expect(linesA).toContain(`${cs2.gid}:0:0`);
+  // IDs are structural ordinals anchored on gid: section 0 = "<gid>_0", line 0 = "<gid>_0_0".
+  expect(sectionsA[0]).toBe(`${cs2.gid}_0`);
+  expect(linesA).toContain(`${cs2.gid}_0_0`);
   db.close();
 });
