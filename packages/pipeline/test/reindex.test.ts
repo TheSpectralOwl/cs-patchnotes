@@ -31,7 +31,7 @@ function makeStubClient(): { client: Meilisearch; state: StubState } {
   const task = (label: string) => ({
     waitTask: async () => {
       state.order.push(label);
-      return {};
+      return { uid: 0, status: "succeeded" };
     },
   });
   const index = {
@@ -66,15 +66,15 @@ function seed(db: ReturnType<typeof openDb>): number {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run("g1", 1_700_000_000, "Counter-Strike 2 Update", "https://example.test/1", "steam_community_announcements", "cs2", "raw", 0);
 
-  db.prepare(`INSERT INTO sections (id, update_id, section_index, header) VALUES (?, ?, ?, ?)`).run("g1:0", "g1", 0, "MAPS");
-  db.prepare(`INSERT INTO sections (id, update_id, section_index, header) VALUES (?, ?, ?, ?)`).run("g1:1", "g1", 1, null);
+  db.prepare(`INSERT INTO sections (id, update_id, section_index, header) VALUES (?, ?, ?, ?)`).run("g1_0", "g1", 0, "MAPS");
+  db.prepare(`INSERT INTO sections (id, update_id, section_index, header) VALUES (?, ?, ?, ?)`).run("g1_1", "g1", 1, null);
 
   const line = db.prepare(
     `INSERT INTO lines (id, section_id, update_id, line_index, text, game) VALUES (?, ?, ?, ?, ?, ?)`,
   );
-  line.run("g1:0:0", "g1:0", "g1", 0, "Fixed a bug on Dust II", "cs2");
-  line.run("g1:0:1", "g1:0", "g1", 1, "Adjusted bomb site A cover", "cs2");
-  line.run("g1:1:0", "g1:1", "g1", 0, "General stability improvements", "cs2");
+  line.run("g1_0_0", "g1_0", "g1", 0, "Fixed a bug on Dust II", "cs2");
+  line.run("g1_0_1", "g1_0", "g1", 1, "Adjusted bomb site A cover", "cs2");
+  line.run("g1_1_0", "g1_1", "g1", 0, "General stability improvements", "cs2");
 
   return (db.prepare("SELECT COUNT(*) AS c FROM lines").get() as { c: number }).c;
 }
@@ -104,7 +104,9 @@ test("every emitted document reserves empty categories and entities arrays", asy
     expect(d.categories).toEqual([]);
     expect(d.entities).toEqual([]);
     // Doc carries the JOINed projection fields.
-    expect(d.id).toMatch(/^g1:/);
+    expect(d.id).toMatch(/^g1_/);
+    // The id is a valid Meilisearch primary key (alphanumeric, _ and - only).
+    expect(d.id).toMatch(/^[a-zA-Z0-9_-]+$/);
     expect(d.title).toBe("Counter-Strike 2 Update");
     expect(d.posted_at).toBe(1_700_000_000);
   }
@@ -116,21 +118,41 @@ test("documents load with primaryKey id so re-loading upserts rather than duplic
   seed(db);
   let capturedPrimaryKey: string | undefined;
 
+  const ok = { waitTask: async () => ({ uid: 0, status: "succeeded" }) };
   const capturingClient = {
     index: () => ({
-      updateSearchableAttributes: () => ({ waitTask: async () => ({}) }),
-      updateSortableAttributes: () => ({ waitTask: async () => ({}) }),
-      updateFilterableAttributes: () => ({ waitTask: async () => ({}) }),
+      updateSearchableAttributes: () => ok,
+      updateSortableAttributes: () => ok,
+      updateFilterableAttributes: () => ok,
       addDocuments: (_docs: MeiliLineDoc[], opts?: { primaryKey?: string }) => {
         capturedPrimaryKey = opts?.primaryKey;
-        return { waitTask: async () => ({}) };
+        return ok;
       },
     }),
-    deleteIndex: () => ({ waitTask: async () => ({}) }),
+    deleteIndex: () => ok,
   } as unknown as Meilisearch;
 
   await reindexFromSqlite(capturingClient, db);
   expect(capturedPrimaryKey).toBe("id");
+  db.close();
+});
+
+test("reindexFromSqlite throws when a Meili load task fails (no silent success)", async () => {
+  const db = openDb(":memory:");
+  seed(db);
+  const failing = {
+    index: () => ({
+      addDocuments: () => ({
+        waitTask: async () => ({
+          uid: 3,
+          status: "failed",
+          error: { message: "Document identifier `1_0_0` is invalid." },
+        }),
+      }),
+    }),
+  } as unknown as Meilisearch;
+
+  await expect(reindexFromSqlite(failing, db)).rejects.toThrow(/failed/);
   db.close();
 });
 

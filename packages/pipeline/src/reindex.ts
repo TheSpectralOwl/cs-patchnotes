@@ -1,7 +1,21 @@
 import type { Database } from "better-sqlite3";
-import type { Meilisearch } from "meilisearch";
+import type { Meilisearch, Task } from "meilisearch";
 import { openDb, type MeiliLineDoc } from "@cs-patchnotes/shared";
 import { buildMeili } from "./meili.js";
+
+/**
+ * Assert an awaited Meili task actually succeeded. `waitTask()` resolves for
+ * BOTH `succeeded` and `failed` tasks, so without this check a rejected batch
+ * (e.g. an invalid document id) would be silently reported as a successful load.
+ * The index is the source of search truth — a failed task must abort loudly.
+ */
+function assertTaskSucceeded(task: Task): void {
+  if (task.status !== "succeeded") {
+    throw new Error(
+      `Meili task ${task.uid} ${task.status}: ${task.error?.message ?? "unknown error"}`,
+    );
+  }
+}
 
 /**
  * The write-side "reindex" stage: project the SQLite source of truth into the
@@ -64,9 +78,9 @@ interface JoinRow {
  */
 export async function ensureIndexAndSettings(client: Meilisearch): Promise<void> {
   const index = client.index<MeiliLineDoc>(INDEX_UID);
-  await index.updateSearchableAttributes(SEARCHABLE).waitTask();
-  await index.updateSortableAttributes(SORTABLE).waitTask();
-  await index.updateFilterableAttributes(FILTERABLE).waitTask();
+  assertTaskSucceeded(await index.updateSearchableAttributes(SEARCHABLE).waitTask());
+  assertTaskSucceeded(await index.updateSortableAttributes(SORTABLE).waitTask());
+  assertTaskSucceeded(await index.updateFilterableAttributes(FILTERABLE).waitTask());
 }
 
 /**
@@ -123,7 +137,7 @@ export async function reindexFromSqlite(client: Meilisearch, db: Database): Prom
 
   for (let i = 0; i < docs.length; i += BATCH_SIZE) {
     const batch = docs.slice(i, i + BATCH_SIZE);
-    await index.addDocuments(batch, { primaryKey: "id" }).waitTask();
+    assertTaskSucceeded(await index.addDocuments(batch, { primaryKey: "id" }).waitTask());
   }
 
   return { documents: docs.length };
