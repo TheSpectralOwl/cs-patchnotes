@@ -11,8 +11,12 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@cs-patchnotes/shared": "*",
+    "@fastify/cors": "^11.3",
     "@fastify/helmet": "^13",
-    "fastify": "^5.10"
+    "fastify": "^5.10",
+    "meilisearch": "^0.59",
+    "zod": "^4.4"
   },
   "devDependencies": {
     "pino-pretty": "^13"
