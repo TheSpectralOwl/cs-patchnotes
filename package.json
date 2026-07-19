@@ -10,7 +10,7 @@
   },
   "scripts": {
     "test": "npm test --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build -w packages/shared && npm run build --workspaces --if-present",
     "dev": "npm run dev -w packages/api",
     "check:secrets": "bash scripts/check-no-secrets.sh",
     "check:meili-port": "bash scripts/check-no-meili-port.sh",
