@@ -1,12 +1,12 @@
 /**
  * The CS2 BBCode clean/split boundary.
  *
- * This is the deliberately swappable internal (the D-07 boundary): a later
- * era-aware rewrite may replace the body of `parseCs2Body` entirely, but its
- * caller signature and the returned `{ header, lines }[]` shape are the stable
- * contract and MUST NOT change. It is CS2-ONLY on purpose — do not add CS:GO-era
- * title patterns or golden-file era tests here; that 14-year format-drift work
- * is a later phase's highest-risk task.
+ * This is the deliberately swappable internal: a later era-aware rewrite may
+ * replace the body of `parseCs2Body` entirely, but its caller signature and the
+ * returned `{ header, lines }[]` shape are the stable contract and MUST NOT
+ * change. It is CS2-ONLY on purpose — do not add CS:GO-era title patterns or
+ * golden-file era tests here; that 14-year format-drift work belongs to the
+ * later full-historical-ingestion effort, not this module.
  *
  * The raw bodies are untrusted external BBCode/HTML. The searchable text this
  * produces carries no markup and no image URLs — the SPA renders it as escaped

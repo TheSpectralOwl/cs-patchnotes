@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # check-no-meili-key-in-web.sh — guards the private-Meili boundary at the browser
-# tier (Pitfall 9). The SPA must talk ONLY to the API (`VITE_API_URL`); it must
-# never carry a Meilisearch key or host. This inspects the BUILT bundle — the
-# actual artifact shipped to users — so a stray import/env leak is caught in CI.
+# tier. The SPA must talk ONLY to the API (`VITE_API_URL`); it must never carry a
+# Meilisearch key or host. This inspects the BUILT bundle — the actual artifact
+# shipped to users — so a stray import/env leak is caught in CI.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
