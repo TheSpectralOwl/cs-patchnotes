@@ -6,9 +6,13 @@
 # local override is never auto-merged there:
 #     docker compose -f docker-compose.yml --profile vps up -d
 #
-# NOTE: the `poller` service is deliberately OMITTED here — it is added
-# once `packages/pipeline` exists. Its absence is an intentional, documented
-# deferral, not a gap.
+# The `poller` service is the data pipeline (poll -> parse -> reindex -> rebuild).
+# It is gated behind the `seed` profile so it NEVER auto-starts on `up -d` (plain
+# or `--profile vps`); it is a manual, run-on-demand one-shot with no scheduler:
+#     docker compose -f docker-compose.yml --profile seed run --rm poller poll
+#     docker compose -f docker-compose.yml --profile seed run --rm poller reindex
+# The poller writes the SQLite file that the api reads: both mount the single
+# `sqlite_data` volume at /data so the reader sees what the writer seeded.
 name: cs-patchnotes
 
 services:
@@ -35,13 +39,42 @@ services:
       PORT: 3000
       MEILI_HOST: http://meili:7700
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?set in .env}
+      SQLITE_PATH: /data/patchnotes.db
       # ANTHROPIC_API_KEY documented in .env.example but unused until classification is wired up.
+    volumes:
+      # Read side of the shared SQLite file: the API reads the same DB that the
+      # poller seeds. Both mount this one volume at /data so search sees the data.
+      - sqlite_data:/data
     depends_on: [meili]
     networks: [internal]
     restart: unless-stopped
     # NO ports: on the VPS path — the API must have zero open inbound ports;
     # it is reached only via cloudflared's outbound tunnel. Local loopback
     # bind is added by the override for debugging.
+
+  poller:
+    # The data pipeline image (poll -> parse -> reindex -> rebuild). Run-on-demand
+    # ONLY: the `seed` profile keeps it out of every `up -d` startup set (plain and
+    # `--profile vps`). Seed the slice with an explicit one-shot, e.g.:
+    #     docker compose -f docker-compose.yml --profile seed run --rm poller poll
+    #     docker compose -f docker-compose.yml --profile seed run --rm poller reindex
+    build:
+      context: .
+      dockerfile: packages/pipeline/Dockerfile
+    environment:
+      MEILI_HOST: http://meili:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?set in .env}
+      SQLITE_PATH: /data/patchnotes.db
+    volumes:
+      # Write side of the shared SQLite file: the poller writes the DB the api
+      # reads. One file, one volume — the writer and reader must agree (WAL).
+      - sqlite_data:/data
+    depends_on: [meili]
+    networks: [internal]
+    # NO restart policy — this is a batch one-shot, not a long-lived service, and
+    # it must exit after the stage completes. NO ports: it reaches Meili by
+    # service name over the internal network only.
+    profiles: [seed]  # off for plain `up` AND `--profile vps up`; on only for `--profile seed`
 
   cloudflared:
     image: cloudflare/cloudflared:2026.7.2
@@ -61,3 +94,7 @@ networks:
 
 volumes:
   meili_data:
+  # Single SQLite file shared by the poller (writer) and the api (reader). Both
+  # mount this at /data with SQLITE_PATH=/data/patchnotes.db so search sees what
+  # the pipeline seeded (WAL — one file, not two divergent copies).
+  sqlite_data:
