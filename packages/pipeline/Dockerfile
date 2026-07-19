@@ -46,6 +46,10 @@ COPY --from=build /app/packages/pipeline/package.json ./packages/pipeline/
 USER node
 
 # The single CLI entrypoint dispatches the poll | parse | reindex | rebuild
-# subcommands (e.g. `docker compose run --rm poller poll`). No EXPOSE/HEALTHCHECK:
-# this is a run-on-demand batch job, not a long-lived service.
-CMD ["node", "packages/pipeline/dist/cli.js"]
+# subcommands (e.g. `docker compose run --rm poller poll`). ENTRYPOINT (not CMD)
+# is required: `docker compose run poller <subcommand>` REPLACES CMD wholesale but
+# only APPENDS to ENTRYPOINT, so the subcommand arrives as argv to the CLI
+# (`node .../cli.js poll`). With a bare CMD the base image's entrypoint would
+# rewrite the lone `poll` arg into `node poll` and fail to resolve it as a module.
+# No EXPOSE/HEALTHCHECK: this is a run-on-demand batch job, not a long-lived service.
+ENTRYPOINT ["node", "packages/pipeline/dist/cli.js"]
