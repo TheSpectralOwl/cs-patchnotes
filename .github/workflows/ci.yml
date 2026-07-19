@@ -56,7 +56,7 @@ jobs:
         run: npm run check:infra
 
   deploy:
-    name: Publish API image and deploy the stack
+    name: Publish images and deploy the stack
     needs: verify
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -74,8 +74,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image metadata
-        id: meta
+      - name: Compute API image metadata
+        id: meta-api
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}-api
@@ -89,8 +89,26 @@ jobs:
           context: .
           file: packages/api/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta-api.outputs.tags }}
+          labels: ${{ steps.meta-api.outputs.labels }}
+
+      - name: Compute poller image metadata
+        id: meta-poller
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-poller
+          tags: |
+            type=sha
+            type=raw,value=latest
+
+      - name: Build and push the poller image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/pipeline/Dockerfile
+          push: true
+          tags: ${{ steps.meta-poller.outputs.tags }}
+          labels: ${{ steps.meta-poller.outputs.labels }}
 
       - name: Deploy the stack over SSH
         uses: appleboy/ssh-action@v1
@@ -100,5 +118,7 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: |
             cd ~/cs-patchnotes
-            docker compose -f docker-compose.yml --profile vps pull
+            # Pull both the vps runtime services and the on-demand seed poller
+            # image so the manual seed uses the freshly published image.
+            docker compose -f docker-compose.yml --profile vps --profile seed pull
             docker compose -f docker-compose.yml --profile vps up -d
