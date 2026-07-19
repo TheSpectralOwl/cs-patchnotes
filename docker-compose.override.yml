@@ -6,7 +6,7 @@
 #
 # On the VPS, deploy with the base file explicitly so this override is NOT merged:
 #     docker compose -f docker-compose.yml --profile vps up -d
-# That keeps Meilisearch fully private (OPS-01) and opens zero inbound ports (OPS-02).
+# That keeps Meilisearch fully private and opens zero inbound ports on the VPS.
 services:
   meili:
     ports:

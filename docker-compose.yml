@@ -1,14 +1,14 @@
 # cs-patchnotes deployable stack (Compose Spec — no `version:` key).
 #
-# One file runs both locally and on the VPS (D-10): `meili` + `api` always start;
+# One file runs both locally and on the VPS: `meili` + `api` always start;
 # `cloudflared` is gated behind the `vps` profile so local `docker compose up`
 # leaves the tunnel off. Deploy on the VPS with an explicit single file so the
 # local override is never auto-merged there:
 #     docker compose -f docker-compose.yml --profile vps up -d
 #
-# NOTE (D-11): the `poller` service is deliberately OMITTED here — it is added in
-# Phase 1 when `packages/pipeline` exists. Its absence is an intentional,
-# documented deferral, not a gap.
+# NOTE: the `poller` service is deliberately OMITTED here — it is added
+# once `packages/pipeline` exists. Its absence is an intentional, documented
+# deferral, not a gap.
 name: cs-patchnotes
 
 services:
@@ -21,9 +21,11 @@ services:
       - meili_data:/meili_data
     networks: [internal]
     restart: unless-stopped
-    # NO ports: — Meilisearch is private (OPS-01, Pitfall 1). It is reached only
-    # by service name over the internal network; local debug binds live in the
-    # override, never on the VPS.
+    # NO ports: — Meilisearch must never be reachable from outside the compose
+    # network (a published host port would expose the search index and its
+    # admin key directly to the internet). It is reached only by service name
+    # over the internal network; local debug binds live in the override, never
+    # on the VPS.
 
   api:
     build:
@@ -33,24 +35,25 @@ services:
       PORT: 3000
       MEILI_HOST: http://meili:7700
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?set in .env}
-      # ANTHROPIC_API_KEY documented in .env.example but unused until Phase 3 (D-09).
+      # ANTHROPIC_API_KEY documented in .env.example but unused until classification is wired up.
     depends_on: [meili]
     networks: [internal]
     restart: unless-stopped
-    # NO ports: on the VPS path — reached only via cloudflared (OPS-02). Local
-    # loopback bind is added by the override for debugging.
+    # NO ports: on the VPS path — the API must have zero open inbound ports;
+    # it is reached only via cloudflared's outbound tunnel. Local loopback
+    # bind is added by the override for debugging.
 
   cloudflared:
     image: cloudflare/cloudflared:2026.7.2
     command: tunnel --no-autoupdate run
     environment:
       # Token encodes tunnel ID, credentials, and ingress (api.<domain> ->
-      # http://api:3000), so no committed cloudflared config file is needed (D-06/D-07).
+      # http://api:3000), so no committed cloudflared config file is needed.
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set in .env}
     depends_on: [api]
     networks: [internal]
     restart: unless-stopped
-    profiles: [vps]  # off for local `docker compose up`, on for `--profile vps` (D-10)
+    profiles: [vps]  # off for local `docker compose up`, on for `--profile vps`
 
 networks:
   internal:

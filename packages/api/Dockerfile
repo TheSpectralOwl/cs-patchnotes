@@ -2,10 +2,11 @@
 # Build context = repo root (see docker-compose.yml: build.context = ".").
 #
 # Debian bookworm-slim (glibc), NOT Alpine (musl): keeps the pattern safe for
-# better-sqlite3 arriving in Phase 1 — its prebuilt binaries target glibc, so a
-# musl base would force a from-source rebuild (Pitfall 3). Node is pinned to 22
-# regardless of the host's Node 24 (Pitfall 4). No ARG/ENV secrets and no COPY of
-# any .env — secrets are injected at runtime by compose (D-08).
+# better-sqlite3 arriving later — its prebuilt binaries target glibc, so a
+# musl base would force a from-source rebuild. Node is pinned to 22 regardless
+# of the host's installed Node version, so the image is reproducible across
+# machines. No ARG/ENV secrets and no COPY of any .env — secrets are injected
+# at runtime by compose, never baked into the image.
 
 # ---- build stage ----
 FROM node:22.23.1-bookworm-slim AS build

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# check-no-meili-port.sh — OPS-01 guard (T-00-09, Pitfall 1).
+# check-no-meili-port.sh — guards against a published Meilisearch host port (T-00-09).
 #
 # Fails if the BASE compose file publishes a host port for the `meili` service.
 # Meilisearch must stay private, reached only by service name over the internal

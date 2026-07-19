@@ -1,8 +1,8 @@
 /**
  * @cs-patchnotes/shared
  *
- * Minimal placeholder export for Phase 0 (D-02). This package intentionally ships
- * a real, non-empty export that later phases grow — it is not an idle stub.
+ * Minimal placeholder export. This package intentionally ships a real,
+ * non-empty export that grows over time — it is not an idle stub.
  */
 
 export const SHARED_PACKAGE = "@cs-patchnotes/shared";
