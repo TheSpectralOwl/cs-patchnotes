@@ -117,7 +117,13 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
+            set -euo pipefail
             cd ~/cs-patchnotes
+            # Sync the deploy directory to the just-merged commit so compose file
+            # and config match the pushed images. `.env` is gitignored, so the
+            # box's secrets are left untouched by the hard reset.
+            git fetch --quiet origin main
+            git reset --hard origin/main
             # Pull both the vps runtime services and the on-demand seed poller
             # image so the manual seed uses the freshly published image.
             docker compose -f docker-compose.yml --profile vps --profile seed pull
