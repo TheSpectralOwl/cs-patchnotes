@@ -61,6 +61,20 @@ export function parseStoredUpdates(db: Database): ParseResult {
       parent_line_index = excluded.parent_line_index
   `);
 
+  // Index-scoped orphan prunes. These delete ONLY the tail rows a freshly
+  // shrunk parse no longer produces — never a blanket per-update delete. A
+  // blanket `DELETE FROM sections WHERE update_id = ?` would cascade through
+  // `lines` into `line_tags` on EVERY parse, silently wiping downstream
+  // classification for unchanged notes. Scoping the delete to indices at or
+  // beyond the new counts means an unchanged/grown re-parse deletes zero rows
+  // (preserving `line_tags`), while a shrink removes exactly the stale tail.
+  const pruneSectionsStmt = db.prepare(
+    "DELETE FROM sections WHERE update_id = @update_id AND section_index >= @section_count",
+  );
+  const pruneLinesStmt = db.prepare(
+    "DELETE FROM lines WHERE section_id = @section_id AND line_index >= @line_count",
+  );
+
   const result: ParseResult = { sections: 0, lines: 0, zeroLineUpdates: 0 };
 
   const tx = db.transaction((rows: StoredUpdate[]) => {
@@ -92,7 +106,14 @@ export function parseStoredUpdates(db: Database): ParseResult {
           result.lines += 1;
           linesForUpdate += 1;
         });
+
+        // Within this surviving section, drop only the shrunk tail lines.
+        pruneLinesStmt.run({ section_id: sid, line_count: section.lines.length });
       });
+
+      // Drop sections beyond the new count; their lines (and cascaded line_tags)
+      // fall away via ON DELETE CASCADE because those sections no longer exist.
+      pruneSectionsStmt.run({ update_id: update.id, section_count: parsed.length });
 
       // Loud-not-silent: a note that matched an era but produced no lines is a
       // parser-drift signal, never a silent drop.
