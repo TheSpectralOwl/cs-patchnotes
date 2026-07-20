@@ -93,6 +93,64 @@ test("parsing is idempotent — identical section/line IDs and stable row counts
   db.close();
 });
 
+test("a shrinking re-parse prunes orphan sections and lines, leaving zero stragglers", () => {
+  const db = openDb(":memory:");
+  const gid = "9000000000000000001";
+  const longBody =
+    "[ ALPHA ]\n[list]\n[*] a1\n[*] a2\n[*] a3\n[/list]\n[ BETA ]\n[list]\n[*] b1\n[*] b2\n[/list]";
+  const shortBody = "[ ALPHA ]\n[list]\n[*] a1\n[/list]";
+
+  db.prepare(
+    `INSERT INTO updates (id, posted_at, title, url, feedname, game, raw_body, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(gid, 1700000000, "shrink test", "http://x", "steam_community_announcements", "cs2", longBody, 0);
+
+  parseStoredUpdates(db);
+  // The long body produces ALPHA(3) + BETA(2); a high-index line only the long
+  // parse could produce is section 0 line 2 ("a3").
+  const orphanLineId = `${gid}_0_2`;
+  expect(
+    (db.prepare("SELECT id FROM lines WHERE id = ?").get(orphanLineId) as { id: string } | undefined),
+  ).toBeDefined();
+
+  // Overwrite with a strictly shorter body and re-parse.
+  db.prepare("UPDATE updates SET raw_body = ? WHERE id = ?").run(shortBody, gid);
+  parseStoredUpdates(db);
+
+  // Only the shorter body's rows survive: 1 section, 1 line — no orphans.
+  const sectionCount = (db.prepare("SELECT COUNT(*) c FROM sections WHERE update_id = ?").get(gid) as { c: number }).c;
+  const lineCount = (db.prepare("SELECT COUNT(*) c FROM lines WHERE update_id = ?").get(gid) as { c: number }).c;
+  expect(sectionCount).toBe(1);
+  expect(lineCount).toBe(1);
+
+  // The first-parse-only high-index line id is gone.
+  expect(db.prepare("SELECT id FROM lines WHERE id = ?").get(orphanLineId)).toBeUndefined();
+  db.close();
+});
+
+test("an unchanged re-parse deletes zero rows and preserves downstream line_tags", () => {
+  const db = openDb(":memory:");
+  seedUpdate(db, cs2);
+  parseStoredUpdates(db);
+
+  // Attach a sentinel classification row to a real line (simulating a later pass).
+  const sentinelLineId = `${cs2.gid}_0_0`;
+  expect(db.prepare("SELECT id FROM lines WHERE id = ?").get(sentinelLineId)).toBeDefined();
+  db.prepare(
+    `INSERT INTO line_tags (line_id, kind, category, entity, source, confidence)
+     VALUES (?, 'category', 'gameplay', NULL, 'rules', NULL)`,
+  ).run(sentinelLineId);
+
+  // Re-parse the UNCHANGED body — the orphan prune must find nothing to delete.
+  parseStoredUpdates(db);
+
+  const tag = db
+    .prepare("SELECT line_id FROM line_tags WHERE line_id = ? AND kind = 'category'")
+    .get(sentinelLineId) as { line_id: string } | undefined;
+  expect(tag).toBeDefined();
+  db.close();
+});
+
 test("the lines table carries the nullable nesting columns", () => {
   const db = openDb(":memory:");
   const cols = (db.prepare("PRAGMA table_info(lines)").all() as { name: string }[]).map((c) => c.name);
