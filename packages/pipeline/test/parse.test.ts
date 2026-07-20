@@ -192,6 +192,34 @@ for (const g of GOLDEN) {
   });
 }
 
+test("inline-formatting-wrapped headers split into their real named sections with no bracket leak", () => {
+  const fx = loadFixture("cs2-2023-btag-header.json");
+  const sections = parseBody(fx.contents, fx.date);
+
+  // (a) The note is NOT collapsed into a single header:null block.
+  expect(sections.length).toBeGreaterThan(1);
+
+  // (b) The wrapped headers are re-detected as their real named sections.
+  const headers = sections.map((s) => s.header).filter((h): h is string => h !== null);
+  expect(headers).toContain("CASE DROPS");
+  expect(headers).toContain("MAPS");
+  expect(headers).toContain("WEAPONS");
+  expect(headers).toContain("WORKSHOP TOOLS");
+
+  // (c) Every titled section carries at least one line.
+  for (const s of sections) {
+    if (s.header !== null) expect(s.lines.length).toBeGreaterThan(0);
+  }
+
+  // (d) No bracket-wrapped header text leaks into searchable line text — the
+  //     `\[` no-leak assertion runs against this real affected body.
+  for (const s of sections) {
+    for (const line of s.lines) {
+      expect(line.text).not.toMatch(FORBIDDEN);
+    }
+  }
+});
+
 test("golden: a known CS:GO 2013 line's cleaned text matches exactly (positive lock)", () => {
   const fx = loadFixture("csgo-2013-crlf.json");
   const sections = parseBody(fx.contents, fx.date);
