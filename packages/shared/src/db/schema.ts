@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS updates (
   feedname    TEXT,               -- for filter/audit
   game        TEXT NOT NULL,      -- 'csgo' | 'cs2' derived from posted_at
   raw_body    TEXT NOT NULL,      -- ORIGINAL body, untouched (enables re-parse)
-  fetched_at  INTEGER NOT NULL
+  fetched_at  INTEGER NOT NULL,
+  channel     TEXT NOT NULL DEFAULT 'mainline'  -- mainline|beta|workshop|prerelease|store
 );
 
 -- Sections = the [ HEADER ] splits within an update.

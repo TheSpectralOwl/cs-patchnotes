@@ -7,6 +7,16 @@
  * in the disposable Meilisearch index (one document per line).
  */
 
+/**
+ * The release channel of a stored update. A closed string-literal union
+ * (modelled exactly like `game`) so an invalid channel is a compile-time error.
+ *
+ * `mainline` is the default and the pristine timeline players search. The
+ * non-mainline members flag beta/workshop/prerelease/store posts so they are
+ * distinguishable and never silently merged into the mainline history.
+ */
+export type Channel = "mainline" | "beta" | "workshop" | "prerelease" | "store";
+
 /** A row in `updates` — one real Steam patch-note post. */
 export interface UpdateRow {
   /** Steam gid (stable, Valve-assigned). Equals `update.id`. */
@@ -22,6 +32,8 @@ export interface UpdateRow {
   /** ORIGINAL body, untouched — enables re-parse without re-fetch. */
   raw_body: string;
   fetched_at: number;
+  /** Release channel — defaults to `mainline`; flags beta/workshop/etc. */
+  channel: Channel;
 }
 
 /** A row in `sections` — a `[ HEADER ]` split within an update. */
