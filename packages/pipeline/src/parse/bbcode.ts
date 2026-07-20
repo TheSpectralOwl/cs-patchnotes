@@ -161,7 +161,7 @@ function parsePlainText(normalized: string): ParsedSection[] {
  * nested. Block tags become boundaries; nesting is captured (not flattened):
  * when a line sits at list-depth `d`, its parent is the most recent line at
  * depth `d-1` within the same section — that parent's text becomes the child's
- * `subheader` and its index becomes `parentLineIndex` (D-12). Top-level lines
+ * `subheader` and its index becomes `parentLineIndex`. Top-level lines
  * (no shallower line in the section) stay null.
  */
 function parseRichText(normalized: string): ParsedSection[] {
@@ -266,7 +266,7 @@ export function parseBody(raw: string, postedAt?: number): ParsedSection[] {
 }
 
 /**
- * Backward-compatible alias preserving the Phase 1 caller signature. Delegates
+ * Backward-compatible alias preserving the original CS2-only caller signature. Delegates
  * to {@link parseBody}; the returned `{ header, lines }[]` contract is unchanged
  * (lines now carry nullable nesting fields).
  */
