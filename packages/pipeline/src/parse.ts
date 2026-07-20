@@ -1,11 +1,11 @@
 import type { Database } from "better-sqlite3";
 import { openDb, sectionId, lineId } from "@cs-patchnotes/shared";
-import { parseCs2Body } from "./parse/bbcode.js";
+import { parseBody, detectEra } from "./parse/bbcode.js";
 
 /**
  * The write-side "parse" stage: read the pristine `raw_body` back from SQLite,
- * split it into sections and lines via the CS2 parser, and upsert those with
- * stable structural IDs.
+ * split it into sections and lines via the era-aware parser, and upsert those
+ * with stable structural IDs (preserving parent→child nesting).
  *
  * Because it reads the stored raw body (never the network), the corpus can be
  * re-parsed at any time without re-fetching. IDs are deterministic ordinals
@@ -17,22 +17,26 @@ interface StoredUpdate {
   id: string;
   game: string;
   raw_body: string;
+  posted_at: number;
 }
 
 /** Counts written by a parse pass. */
 export interface ParseResult {
   sections: number;
   lines: number;
+  /** Updates that matched an era but produced zero lines (surfaced loudly). */
+  zeroLineUpdates: number;
 }
 
 /**
  * Parse every stored update's raw body into sections + lines and upsert them.
  * All writes run in a single transaction. Re-running reproduces identical IDs
- * and rows (idempotent).
+ * and rows (idempotent). An update that matches an era yet yields zero lines is
+ * logged loudly (never silently dropped) and counted for reporting.
  */
 export function parseStoredUpdates(db: Database): ParseResult {
   const updates = db
-    .prepare("SELECT id, game, raw_body FROM updates")
+    .prepare("SELECT id, game, raw_body, posted_at FROM updates")
     .all() as StoredUpdate[];
 
   const sectionStmt = db.prepare(`
@@ -45,21 +49,25 @@ export function parseStoredUpdates(db: Database): ParseResult {
   `);
 
   const lineStmt = db.prepare(`
-    INSERT INTO lines (id, section_id, update_id, line_index, text, game)
-    VALUES (@id, @section_id, @update_id, @line_index, @text, @game)
+    INSERT INTO lines (id, section_id, update_id, line_index, text, game, subheader, parent_line_index)
+    VALUES (@id, @section_id, @update_id, @line_index, @text, @game, @subheader, @parent_line_index)
     ON CONFLICT(id) DO UPDATE SET
-      section_id = excluded.section_id,
-      update_id  = excluded.update_id,
-      line_index = excluded.line_index,
-      text       = excluded.text,
-      game       = excluded.game
+      section_id        = excluded.section_id,
+      update_id         = excluded.update_id,
+      line_index        = excluded.line_index,
+      text              = excluded.text,
+      game              = excluded.game,
+      subheader         = excluded.subheader,
+      parent_line_index = excluded.parent_line_index
   `);
 
-  const result: ParseResult = { sections: 0, lines: 0 };
+  const result: ParseResult = { sections: 0, lines: 0, zeroLineUpdates: 0 };
 
   const tx = db.transaction((rows: StoredUpdate[]) => {
     for (const update of rows) {
-      const parsed = parseCs2Body(update.raw_body);
+      const parsed = parseBody(update.raw_body, update.posted_at);
+      let linesForUpdate = 0;
+
       parsed.forEach((section, sectionIndex) => {
         const sid = sectionId(update.id, sectionIndex);
         sectionStmt.run({
@@ -70,18 +78,31 @@ export function parseStoredUpdates(db: Database): ParseResult {
         });
         result.sections += 1;
 
-        section.lines.forEach((text, lineIndex) => {
+        section.lines.forEach((line, lineIndex) => {
           lineStmt.run({
             id: lineId(sid, lineIndex),
             section_id: sid,
             update_id: update.id,
             line_index: lineIndex,
-            text,
+            text: line.text, // extract the cleaned string — never the whole ParsedLine
             game: update.game, // carry game from the parent update
+            subheader: line.subheader,
+            parent_line_index: line.parentLineIndex,
           });
           result.lines += 1;
+          linesForUpdate += 1;
         });
       });
+
+      // Loud-not-silent: a note that matched an era but produced no lines is a
+      // parser-drift signal, never a silent drop.
+      if (linesForUpdate === 0) {
+        result.zeroLineUpdates += 1;
+        const era = detectEra(update.raw_body, update.posted_at);
+        console.warn(
+          `parse: update ${update.id} (era ${era}) produced ZERO lines — not dropped, surfaced for review`,
+        );
+      }
     }
   });
 
@@ -92,6 +113,9 @@ export function parseStoredUpdates(db: Database): ParseResult {
 /** CLI entrypoint for `pipeline parse`. */
 export async function runParse(): Promise<void> {
   const db = openDb();
-  const { sections, lines } = parseStoredUpdates(db);
-  console.log(`parse: wrote ${sections} section(s), ${lines} line(s)`);
+  const { sections, lines, zeroLineUpdates } = parseStoredUpdates(db);
+  console.log(
+    `parse: wrote ${sections} section(s), ${lines} line(s)` +
+      (zeroLineUpdates > 0 ? `; ${zeroLineUpdates} zero-line update(s) surfaced` : ""),
+  );
 }

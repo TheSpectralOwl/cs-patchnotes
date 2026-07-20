@@ -88,3 +88,46 @@ test("parsing is idempotent — identical section/line IDs and stable row counts
   expect(linesA).toContain(`${cs2.gid}_0_0`);
   db.close();
 });
+
+test("the lines table carries the nullable nesting columns", () => {
+  const db = openDb(":memory:");
+  const cols = (db.prepare("PRAGMA table_info(lines)").all() as { name: string }[]).map((c) => c.name);
+  expect(cols).toContain("subheader");
+  expect(cols).toContain("parent_line_index");
+  db.close();
+});
+
+test("nested bullets persist a non-null subheader + parent_line_index to SQLite", () => {
+  const db = openDb(":memory:");
+  seedUpdate(db, cs2);
+  parseStoredUpdates(db);
+
+  const linked = db
+    .prepare("SELECT text, subheader, parent_line_index FROM lines WHERE subheader IS NOT NULL AND parent_line_index IS NOT NULL")
+    .all() as Pick<LineRow, "text" | "subheader" | "parent_line_index">[];
+  expect(linked.length).toBeGreaterThan(0);
+  for (const row of linked) {
+    expect(typeof row.subheader).toBe("string");
+    expect(typeof row.parent_line_index).toBe("number");
+  }
+  db.close();
+});
+
+test("stored line text is the extracted cleaned string, never a stringified ParsedLine", () => {
+  const db = openDb(":memory:");
+  seedUpdate(db, cs2);
+  parseStoredUpdates(db);
+
+  const rows = db.prepare("SELECT text FROM lines").all() as Pick<LineRow, "text">[];
+  expect(rows.length).toBeGreaterThan(0);
+  // (a) every row is a real string and none is a stringified object
+  for (const { text } of rows) {
+    expect(typeof text).toBe("string");
+    expect(text).not.toContain("[object Object]");
+  }
+  // (b) a specific known bullet's cleaned text matches exactly — proving `.text`
+  //     was extracted, not the whole ParsedLine object.
+  const texts = rows.map((r) => r.text);
+  expect(texts).toContain("Premier Season Five has begun");
+  db.close();
+});
