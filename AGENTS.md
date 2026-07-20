@@ -139,11 +139,14 @@ A searchable archive of every Counter-Strike patch note (CS:GO + CS2), with full
 
 ### No ephemeral planning references in committed code, PRs, or issues
 
-Committed source, config, scripts, pull request titles/descriptions, and
-GitHub issues must never reference GSD planning-cycle identifiers in
-comments, strings, filenames, env files, or prose. This covers phase/plan
-references ("Phase 0", "00-01"), decision references ("D-08"), requirement
-references ("OPS-01"), and research references ("Pitfall 3").
+Committed source, config, scripts, commit messages, pull request
+titles/descriptions, and GitHub issues must never reference GSD
+planning-cycle identifiers in comments, strings, filenames, env files, or
+prose. This covers phase/plan references ("Phase 0", "00-01"), decision
+references ("D-08"), requirement references ("OPS-01"), and research
+references ("Pitfall 3"). Commit subjects must not carry a plan-id scope —
+write `feat: add channel column` or `feat(pipeline): …`, never
+`feat(00-01): …`.
 
 **Why:** Planning is ephemeral and re-numberable (`.planning/` is git-ignored,
 `commit_docs: false`); the codebase is not. A comment like `// added in Phase 1`
@@ -169,6 +172,10 @@ planning-cycle pointers.
 ```bash
 git diff --cached --name-only | grep -v '^\.planning/' | xargs -r grep -inE '\bphase [0-9]|\bD-[0-9]{2}\b|\b(OPS|REQ)-[0-9]{2}\b|\bPitfall [0-9]+\b'
 ```
+
+Commit-message plan scopes are enforced automatically by the version-controlled
+`commit-msg` hook (`.githooks/commit-msg`, wired via `core.hooksPath` by the root
+`prepare` script), which rewrites `type(NN-NN): …` → `type: …` at commit time.
 
 See `.planning/CONVENTIONS.md` for full detail.
 <!-- GSD:conventions-end -->
