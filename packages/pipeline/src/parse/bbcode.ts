@@ -43,6 +43,12 @@ export interface ParsedSection {
  */
 export type Era = "cs2-richtext" | "csgo-crlf" | "csgo-lf";
 
+/**
+ * BBCode tag names that must NEVER be read as a `[ SECTION ]` header. A bare
+ * `[list]` / `[*]` / `[p]` / `[url]` fragment is markup, not a Valve header.
+ */
+const BBCODE_TAG_NAME = /^(?:list|\*|p|url|img|b|i|u|s|strike|spoiler|quote|code|h[1-6]|olist|table|tr|td)$/i;
+
 /** Decode the handful of HTML entities that appear in Steam note bodies. */
 function decodeEntities(text: string): string {
   return text
@@ -53,6 +59,153 @@ function decodeEntities(text: string): string {
     .replace(/&#0*39;/g, "'")
     .replace(/&apos;/g, "'")
     .replace(/&nbsp;/g, " ");
+}
+
+/**
+ * Shared normalize-before-split prelude reused across all three eras:
+ *  1. unescape backslash-escaped brackets (`\[ MAPS ]` → `[ MAPS ]`);
+ *  2. strip images entirely — `[img …]…[/img]`, self-closing `[img …]`,
+ *     `{STEAM_CLAN_IMAGE}` tokens, and bare steamstatic URLs — BEFORE any header
+ *     detection, so no image hash or URL can reach searchable text;
+ *  3. normalize CRLF → LF so both CS:GO line-ending eras share one splitter.
+ */
+function normalize(raw: string): string {
+  let s = raw.replace(/\\(\[|\])/g, "$1");
+  s = s.replace(/\[img\b[^\]]*\][\s\S]*?\[\/img\]/gi, "\n");
+  s = s.replace(/\[img\b[^\]]*\]/gi, "\n");
+  s = s.replace(/\{STEAM_CLAN_IMAGE\}\S*/gi, " ");
+  s = s.replace(/https?:\/\/\S*steamstatic\S*/gi, " ");
+  s = s.replace(/\r\n/g, "\n");
+  return s;
+}
+
+/** True when `trimmed` is a bare `[ HEADER ]` and not an inline BBCode tag. */
+function headerOf(trimmed: string): string | null {
+  const m = trimmed.match(/^\[\s*(.+?)\s*\]$/);
+  if (!m) return null;
+  const inner = m[1].trim();
+  // Real headers carry no '=' or '/', and are never a BBCode tag name.
+  if (/[=/]/.test(inner)) return null;
+  if (BBCODE_TAG_NAME.test(inner)) return null;
+  return inner;
+}
+
+/** Strip remaining inline BBCode tags to their inner text, then decode entities. */
+function cleanInline(fragment: string): string {
+  const stripped = fragment.replace(/\[\/?[a-z][^\]]*\]/gi, "");
+  return decodeEntities(stripped).trim();
+}
+
+/**
+ * The plain-text eras (`csgo-crlf` / `csgo-lf`). After CRLF→LF normalization the
+ * two are identical: bare `[ HEADER ]` lines split sections and each remaining
+ * non-empty line is a bullet (its leading `-` / `–` / `•` / `[*]` glyph stripped).
+ * These older formats are flat — every line is top-level (null nesting).
+ */
+function parsePlainText(normalized: string): ParsedSection[] {
+  const sections: ParsedSection[] = [];
+  let current: ParsedSection | null = null;
+
+  const ensureSection = (): ParsedSection => {
+    if (current === null) {
+      current = { header: null, lines: [] };
+      sections.push(current);
+    }
+    return current;
+  };
+
+  for (const fragment of normalized.split(/\n/)) {
+    const trimmed = fragment.trim();
+    if (trimmed.length === 0) continue;
+
+    const header = headerOf(trimmed);
+    if (header !== null) {
+      current = { header, lines: [] };
+      sections.push(current);
+      continue;
+    }
+
+    // Strip a leading bullet glyph (hyphen, en/em dash, bullet, or [*]).
+    const debulleted = trimmed.replace(/^(?:[-\u2013\u2014\u2022]|\[\*\])\s*/, "");
+    const text = cleanInline(debulleted);
+    if (text.length === 0) continue;
+    ensureSection().lines.push({ text, subheader: null, parentLineIndex: null });
+  }
+
+  return sections.filter((sec) => sec.header !== null || sec.lines.length > 0);
+}
+
+/**
+ * The `cs2-richtext` era: `[p]` paragraphs and `[list]`/`[*]` items, arbitrarily
+ * nested. Block tags become boundaries; nesting is captured (not flattened):
+ * when a line sits at list-depth `d`, its parent is the most recent line at
+ * depth `d-1` within the same section — that parent's text becomes the child's
+ * `subheader` and its index becomes `parentLineIndex` (D-12). Top-level lines
+ * (no shallower line in the section) stay null.
+ */
+function parseRichText(normalized: string): ParsedSection[] {
+  const sections: ParsedSection[] = [];
+  let current: ParsedSection | null = null;
+  // parentStack[d] = line_index (within `current`) of the most recent line at depth d.
+  let parentStack: number[] = [];
+
+  const startSection = (header: string | null): void => {
+    current = { header, lines: [] };
+    sections.push(current);
+    parentStack = [];
+  };
+  const ensureSection = (): ParsedSection => {
+    if (current === null) startSection(null);
+    return current as ParsedSection;
+  };
+
+  let listDepth = 0;
+  const tagRe = /\[(\/?)(list\b|p\b|h[1-6]\b|\*)[^\]]*\]/gi;
+
+  const emitText = (chunk: string): void => {
+    // A chunk of text sits between two block boundaries at the current listDepth.
+    for (const piece of chunk.split(/\n/)) {
+      const trimmed = piece.trim();
+      if (trimmed.length === 0) continue;
+
+      const header = headerOf(trimmed);
+      if (header !== null) {
+        startSection(header);
+        continue;
+      }
+
+      const text = cleanInline(trimmed);
+      if (text.length === 0) continue;
+
+      const section = ensureSection();
+      const lineIndex = section.lines.length;
+      let subheader: string | null = null;
+      let parentLineIndex: number | null = null;
+      if (listDepth >= 1 && parentStack[listDepth - 1] !== undefined) {
+        parentLineIndex = parentStack[listDepth - 1];
+        subheader = section.lines[parentLineIndex].text;
+      }
+      section.lines.push({ text, subheader, parentLineIndex });
+      parentStack[listDepth] = lineIndex;
+      parentStack.length = listDepth + 1; // drop any deeper stale parents
+    }
+  };
+
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(normalized)) !== null) {
+    emitText(normalized.slice(lastIndex, m.index));
+    lastIndex = tagRe.lastIndex;
+    const closing = m[1] === "/";
+    const tag = m[2].toLowerCase();
+    if (tag.startsWith("list")) {
+      listDepth = closing ? Math.max(0, listDepth - 1) : listDepth + 1;
+    }
+    // [p], [*], and [h1-6] are pure boundaries — their text is handled above.
+  }
+  emitText(normalized.slice(lastIndex));
+
+  return sections.filter((sec) => sec.header !== null || sec.lines.length > 0);
 }
 
 /**
@@ -83,56 +236,9 @@ export function detectEra(raw: string, postedAt?: number): Era {
  * same order — the ordinal-derived IDs upstream depend on that.
  */
 export function parseBody(raw: string, postedAt?: number): ParsedSection[] {
-  // NOTE: era-specific dispatch + nesting preservation is implemented in the
-  // next task. This provisional body ports the CS2 clean/split so the contract
-  // compiles and the existing callers/tests stay green.
-  void detectEra(raw, postedAt);
-
-  // 1. unescape backslash-escaped brackets
-  let s = raw.replace(/\\(\[|\])/g, "$1");
-
-  // 2. strip images entirely (both [img]URL[/img] and [img src="{STEAM_CLAN_IMAGE}/…png"][/img])
-  s = s.replace(/\[img\b[^\]]*\][\s\S]*?\[\/img\]/gi, "\n");
-  s = s.replace(/\{STEAM_CLAN_IMAGE\}\S*/gi, " ");
-  s = s.replace(/https?:\/\/\S*steamstatic\S*/gi, " ");
-
-  // 3. convert block-level tags into newline boundaries
-  s = s.replace(/\[\/?(?:p|list|h[1-6])\b[^\]]*\]/gi, "\n");
-  s = s.replace(/\[\/?\*\]/g, "\n"); // [*] and [/*]
-
-  // 4. split into raw fragments (covers the original \n in older bodies too)
-  const fragments = s.split(/\r?\n/);
-
-  const sections: ParsedSection[] = [];
-  let current: ParsedSection | null = null;
-
-  const ensureSection = (): ParsedSection => {
-    if (current === null) {
-      current = { header: null, lines: [] };
-      sections.push(current);
-    }
-    return current;
-  };
-
-  for (const fragment of fragments) {
-    const trimmed = fragment.trim();
-    if (trimmed.length === 0) continue;
-
-    const headerMatch = trimmed.match(/^\[\s*(.+?)\s*\]$/);
-    if (headerMatch && !/[=/]/.test(headerMatch[1])) {
-      current = { header: headerMatch[1].trim(), lines: [] };
-      sections.push(current);
-      continue;
-    }
-
-    let text = fragment.replace(/\[\/?[a-z][^\]]*\]/gi, "");
-    text = decodeEntities(text).trim();
-
-    if (text.length === 0) continue;
-    ensureSection().lines.push({ text, subheader: null, parentLineIndex: null });
-  }
-
-  return sections.filter((sec) => sec.header !== null || sec.lines.length > 0);
+  const era = detectEra(raw, postedAt);
+  const normalized = normalize(raw);
+  return era === "cs2-richtext" ? parseRichText(normalized) : parsePlainText(normalized);
 }
 
 /**
