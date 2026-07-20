@@ -57,6 +57,10 @@ export interface LineRow {
   text: string;
   /** Denormalised from the parent update for filtering. */
   game: "cs2" | "csgo";
+  /** Literal parent-node text (e.g. a map name); null for a top-level line. */
+  subheader: string | null;
+  /** `line_index` of the parent line within the same section; null if top-level. */
+  parent_line_index: number | null;
 }
 
 /**

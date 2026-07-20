@@ -45,12 +45,14 @@ CREATE TABLE IF NOT EXISTS sections (
 
 -- Lines = individual note lines within a section. PRISTINE — no tags here.
 CREATE TABLE IF NOT EXISTS lines (
-  id          TEXT PRIMARY KEY,   -- '{section_id}_{line_index}'
-  section_id  TEXT NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
-  update_id   TEXT NOT NULL REFERENCES updates(id) ON DELETE CASCADE,  -- denorm for query speed
-  line_index  INTEGER NOT NULL,
-  text        TEXT NOT NULL,      -- cleaned note text
-  game        TEXT NOT NULL,      -- denorm from update for filtering
+  id                TEXT PRIMARY KEY,   -- '{section_id}_{line_index}'
+  section_id        TEXT NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+  update_id         TEXT NOT NULL REFERENCES updates(id) ON DELETE CASCADE,  -- denorm for query speed
+  line_index        INTEGER NOT NULL,
+  text              TEXT NOT NULL,      -- cleaned note text
+  game              TEXT NOT NULL,      -- denorm from update for filtering
+  subheader         TEXT,               -- literal parent-node text (e.g. a map name); null = top-level
+  parent_line_index INTEGER,            -- line_index of the parent line in the same section; null = top-level
   UNIQUE(section_id, line_index)
 );
 
