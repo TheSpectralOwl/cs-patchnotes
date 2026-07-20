@@ -159,6 +159,7 @@ const GOLDEN: Golden[] = [
   { file: "csgo-2021-lf.json", sections: 3, lineCounts: [4, 2, 2] },
   { file: "cs2-2023-richtext.json", sections: 8, lineCounts: [2, 15, 14, 10, 2, 4, 11, 3] },
   { file: "cs2-2026-richtext.json", sections: 10, lineCounts: [3, 1, 11, 5, 2, 1, 22, 5, 1, 9] },
+  { file: "cs2-2023-btag-header.json", sections: 6, lineCounts: [1, 2, 1, 7, 5, 1] },
   { file: "edge-headerless.json", sections: 1, lineCounts: [3] },
   { file: "edge-off-title-allowlisted.json", sections: 4, lineCounts: [2, 4, 19, 12] },
   { file: "edge-nested-map-subheader.json", sections: 3, lineCounts: [3, 8, 14] },

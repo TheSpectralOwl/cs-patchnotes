@@ -90,6 +90,27 @@ function headerOf(trimmed: string): string | null {
   return inner;
 }
 
+/**
+ * Remove a single matched pair of leading + trailing inline formatting-only
+ * tags (`[b]`/`[i]`/`[u]` and their closers) wrapping a fragment, so a
+ * formatting-wrapped bare bracket header (`[b][ MAPS ][/b]`) can be re-detected
+ * as a header. Only the outermost matched pair is stripped — this is header
+ * detection, not a general un-nester, and it never touches block tags
+ * (`[list]`/`[p]`/`[*]`) which are boundaries handled elsewhere.
+ *
+ * The regexes are anchored to the fragment ends with no nested unbounded
+ * quantifiers, so they run in linear time and cannot be forced into
+ * catastrophic backtracking by an adversarial body.
+ */
+function stripInlineWrappers(fragment: string): string {
+  const open = /^\[(?:b|i|u)\]/i;
+  const close = /\[\/(?:b|i|u)\]$/i;
+  if (open.test(fragment) && close.test(fragment)) {
+    return fragment.replace(open, "").replace(close, "").trim();
+  }
+  return fragment;
+}
+
 /** Strip remaining inline BBCode tags to their inner text, then decode entities. */
 function cleanInline(fragment: string): string {
   const stripped = fragment.replace(/\[\/?[a-z][^\]]*\]/gi, "");
@@ -168,7 +189,10 @@ function parseRichText(normalized: string): ParsedSection[] {
       const trimmed = piece.trim();
       if (trimmed.length === 0) continue;
 
-      const header = headerOf(trimmed);
+      // Detect headers whose bare brackets are wrapped in inline formatting
+      // (`[b][ MAPS ][/b]`) as well as unwrapped bare `[ MAPS ]` headers: strip
+      // any outer formatting wrapper BEFORE header detection, then re-detect.
+      const header = headerOf(stripInlineWrappers(trimmed));
       if (header !== null) {
         startSection(header);
         continue;
