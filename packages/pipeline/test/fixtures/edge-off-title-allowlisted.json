@@ -1,0 +1,12 @@
+{
+  "gid": "3879252510628624545",
+  "title": "Week 2 Missions and More",
+  "url": "https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/3879252510628624545",
+  "feed_type": 1,
+  "feedname": "steam_community_announcements",
+  "date": 1607543674,
+  "contents": "Week 2's mission card—\"MOON SHOT\"—is now live. The updates over the last week include changes to the pings and updates to Guard.\n\n2020.12.07 - \n\n[ MISC ]\n– Fixed a crash related to pinging rotating car model in Engage.\n– Fixed Operation Shop buttons to appear correctly on OSX and Linux.\n– Fixed a rare bug when several Broken Fang Premier game settings could get applied in regular Competitive matches.\n– Added background movie fallbacks.\n\n[ MAPS ]\n\nGuard\n\n– Blocked off construction corner.\n– Added new cover for players entering the site from connector.\n– Pulled drop a little closer to site.\n– Shifted all covers on site to adjust angles towards bridge and archway.\n– Slightly shifted connector between back alley and site.\n– Partially restricted sightline between connector and pit.\n– Decreased depth of restaurant corner.\n– Decreased depth of VOOLT corner.\n– Mitigated head peek close at stairs tunnel.\n– Slightly mitigated head peek behind dumpster.\n– Added minor visual details.\n– Various texture updates.\n– Dehexagonized beer bottles.\n– Removed collision on window planters (Thanks Bubza101).\n– Fixed missing faces on beer crates.\n– Fixed a pixel gap on street (Thanks u/iBearably).\n– Fixed grammatical errors on street signs (Thanks Sysel).\n\n2020.12.04 - \n\n[ MISC ]\n\n– Fixed names for several Operation Broken Fang patches to appear as different Steam Community Market commodities.\n– Fixed Sir Bloody Darryl’s death sound.\n– Fixed a regression with soft shadows under agents.\n– Fixed demo playback for the compatibility version of Mirage.\n– Added “Looking to Play: Guardian” for people looking to play Guardian and Strike missions with a partner.\n– Fixed mini-scoreboard alignment when showing player counts.\n– Removed vote to change map in Retakes.\n– Reduced round restart delay to 5 seconds in Retakes.\n– Fixed ping icons to show actual pinged weapon or bomb in all game modes.\n– Fixed ping icons to become transparent when player’s crosshair pointing directly at them.\n– Localization updates.\n– Improved stability.",
+  "tags": [
+    "patchnotes"
+  ]
+}

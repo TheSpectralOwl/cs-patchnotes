@@ -25,6 +25,7 @@ interface Subcommand {
 
 export const COMMANDS: Record<string, Subcommand> = {
   poll: { module: "./poll.js", runner: "runPoll" },
+  backfill: { module: "./poll.js", runner: "runBackfill" },
   parse: { module: "./parse.js", runner: "runParse" },
   reindex: { module: "./reindex.js", runner: "runReindex" },
   rebuild: { module: "./reindex.js", runner: "runRebuild" },

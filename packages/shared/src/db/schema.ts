@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS updates (
   feedname    TEXT,               -- for filter/audit
   game        TEXT NOT NULL,      -- 'csgo' | 'cs2' derived from posted_at
   raw_body    TEXT NOT NULL,      -- ORIGINAL body, untouched (enables re-parse)
-  fetched_at  INTEGER NOT NULL
+  fetched_at  INTEGER NOT NULL,
+  channel     TEXT NOT NULL DEFAULT 'mainline'  -- mainline|beta|workshop|prerelease|store
 );
 
 -- Sections = the [ HEADER ] splits within an update.
@@ -44,12 +45,14 @@ CREATE TABLE IF NOT EXISTS sections (
 
 -- Lines = individual note lines within a section. PRISTINE — no tags here.
 CREATE TABLE IF NOT EXISTS lines (
-  id          TEXT PRIMARY KEY,   -- '{section_id}_{line_index}'
-  section_id  TEXT NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
-  update_id   TEXT NOT NULL REFERENCES updates(id) ON DELETE CASCADE,  -- denorm for query speed
-  line_index  INTEGER NOT NULL,
-  text        TEXT NOT NULL,      -- cleaned note text
-  game        TEXT NOT NULL,      -- denorm from update for filtering
+  id                TEXT PRIMARY KEY,   -- '{section_id}_{line_index}'
+  section_id        TEXT NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+  update_id         TEXT NOT NULL REFERENCES updates(id) ON DELETE CASCADE,  -- denorm for query speed
+  line_index        INTEGER NOT NULL,
+  text              TEXT NOT NULL,      -- cleaned note text
+  game              TEXT NOT NULL,      -- denorm from update for filtering
+  subheader         TEXT,               -- literal parent-node text (e.g. a map name); null = top-level
+  parent_line_index INTEGER,            -- line_index of the parent line in the same section; null = top-level
   UNIQUE(section_id, line_index)
 );
 

@@ -1,0 +1,12 @@
+{
+  "gid": "4026755437314208134",
+  "title": "Premier for All",
+  "url": "https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/4026755437314208134",
+  "feed_type": 1,
+  "feedname": "steam_community_announcements",
+  "date": 1617062094,
+  "contents": "[img]{STEAM_CLAN_IMAGE}/3381077/2f4733cedfec8a834545e59750d9433caa3662f8.png[/img]\nToday we are opening up Broken Fang Premier to everyone.\n\nBroken Fang Premier, which introduces a pick/ban phase to the start of a competitive match, allows players to test their mettle across the entire Active Duty map pool. Pick and ban maps, choose your starting side, and work together to win 16 rounds.\n\nOperation Broken Fang ends April 30th, so now’s the perfect time to queue for Broken Fang Premier with friends. And if you’re an Operation Pass holder, you have one month to complete missions, collect stars, and redeem rewards from the Operation Shop.\n\nFinally, Release Notes for today are below:\n\n[ OPERATION BROKEN FANG ]\n- For a limited time, Broken Fang Premier is available for everyone.\n- Operation Broken Fang Passholders will play in Prime Account Status queue when matchmaking for Broken Fang Premier.\n\n[ MISC ]\n- Fixed Steam networking sockets implementation to dynamically load \"wlanapi.dll\" system library and to work on Windows Server systems which don't have Wireless LAN Service enabled.\n- Adjusted Zeus texture to read Zeus X-27. For the record, this counts as a Zeus skin.",
+  "tags": [
+    "patchnotes"
+  ]
+}

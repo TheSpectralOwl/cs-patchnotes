@@ -9,6 +9,7 @@
     "node": ">=22 <23"
   },
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks || true",
     "test": "npm test --workspaces --if-present",
     "build": "npm run build -w packages/shared && npm run build --workspaces --if-present",
     "dev": "npm run dev -w packages/api",

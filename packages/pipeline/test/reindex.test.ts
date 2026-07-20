@@ -199,8 +199,15 @@ test("two consecutive rebuilds over the same SQLite data emit identical document
   db.close();
 });
 
-test("cli wires all four subcommands: poll, parse, reindex, rebuild", () => {
-  expect(Object.keys(COMMANDS).sort()).toEqual(["parse", "poll", "rebuild", "reindex"]);
+test("cli wires all subcommands: poll, backfill, parse, reindex, rebuild", () => {
+  expect(Object.keys(COMMANDS).sort()).toEqual([
+    "backfill",
+    "parse",
+    "poll",
+    "rebuild",
+    "reindex",
+  ]);
+  expect(COMMANDS.backfill).toEqual({ module: "./poll.js", runner: "runBackfill" });
   expect(COMMANDS.reindex).toEqual({ module: "./reindex.js", runner: "runReindex" });
   expect(COMMANDS.rebuild).toEqual({ module: "./reindex.js", runner: "runRebuild" });
 });

@@ -2,7 +2,7 @@ import { test, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { openDb, type LineRow, type SectionRow } from "@cs-patchnotes/shared";
-import { parseCs2Body } from "../src/parse/bbcode.js";
+import { parseCs2Body, parseBody } from "../src/parse/bbcode.js";
 import { parseStoredUpdates } from "../src/parse.js";
 
 interface Fixture {
@@ -22,9 +22,13 @@ function loadFixture(name: string): Fixture {
 const cs2 = loadFixture("cs2-multi-section.json");
 const imageHeavy = loadFixture("cs2-image-heavy.json");
 
-/** Anything that must NEVER survive into searchable line text. */
+/**
+ * Anything that must NEVER survive into searchable line text. The trailing
+ * `|\[` catches ANY residual bracket — an unescaped `[ HEADER ]`, a stray
+ * markup fragment, or a leftover `\[` — so no bracket of any kind leaks.
+ */
 const FORBIDDEN =
-  /\{STEAM_CLAN_IMAGE\}|steamstatic|\.png|\[\/?(?:img|url|p|list|h[1-6])\b|\[\*\]|\[\/\*\]/i;
+  /\{STEAM_CLAN_IMAGE\}|steamstatic|\.png|\[\/?(?:img|url|p|list|h[1-6])\b|\[\*\]|\[\/\*\]|\[/i;
 
 function seedUpdate(db: ReturnType<typeof openDb>, fx: Fixture): void {
   db.prepare(
@@ -86,5 +90,248 @@ test("parsing is idempotent — identical section/line IDs and stable row counts
   // IDs are structural ordinals anchored on gid: section 0 = "<gid>_0", line 0 = "<gid>_0_0".
   expect(sectionsA[0]).toBe(`${cs2.gid}_0`);
   expect(linesA).toContain(`${cs2.gid}_0_0`);
+  db.close();
+});
+
+test("a shrinking re-parse prunes orphan sections and lines, leaving zero stragglers", () => {
+  const db = openDb(":memory:");
+  const gid = "9000000000000000001";
+  const longBody =
+    "[ ALPHA ]\n[list]\n[*] a1\n[*] a2\n[*] a3\n[/list]\n[ BETA ]\n[list]\n[*] b1\n[*] b2\n[/list]";
+  const shortBody = "[ ALPHA ]\n[list]\n[*] a1\n[/list]";
+
+  db.prepare(
+    `INSERT INTO updates (id, posted_at, title, url, feedname, game, raw_body, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(gid, 1700000000, "shrink test", "http://x", "steam_community_announcements", "cs2", longBody, 0);
+
+  parseStoredUpdates(db);
+  // The long body produces ALPHA(3) + BETA(2); a high-index line only the long
+  // parse could produce is section 0 line 2 ("a3").
+  const orphanLineId = `${gid}_0_2`;
+  expect(
+    (db.prepare("SELECT id FROM lines WHERE id = ?").get(orphanLineId) as { id: string } | undefined),
+  ).toBeDefined();
+
+  // Overwrite with a strictly shorter body and re-parse.
+  db.prepare("UPDATE updates SET raw_body = ? WHERE id = ?").run(shortBody, gid);
+  parseStoredUpdates(db);
+
+  // Only the shorter body's rows survive: 1 section, 1 line — no orphans.
+  const sectionCount = (db.prepare("SELECT COUNT(*) c FROM sections WHERE update_id = ?").get(gid) as { c: number }).c;
+  const lineCount = (db.prepare("SELECT COUNT(*) c FROM lines WHERE update_id = ?").get(gid) as { c: number }).c;
+  expect(sectionCount).toBe(1);
+  expect(lineCount).toBe(1);
+
+  // The first-parse-only high-index line id is gone.
+  expect(db.prepare("SELECT id FROM lines WHERE id = ?").get(orphanLineId)).toBeUndefined();
+  db.close();
+});
+
+test("an unchanged re-parse deletes zero rows and preserves downstream line_tags", () => {
+  const db = openDb(":memory:");
+  seedUpdate(db, cs2);
+  parseStoredUpdates(db);
+
+  // Attach a sentinel classification row to a real line (simulating a later pass).
+  const sentinelLineId = `${cs2.gid}_0_0`;
+  expect(db.prepare("SELECT id FROM lines WHERE id = ?").get(sentinelLineId)).toBeDefined();
+  db.prepare(
+    `INSERT INTO line_tags (line_id, kind, category, entity, source, confidence)
+     VALUES (?, 'category', 'gameplay', NULL, 'rules', NULL)`,
+  ).run(sentinelLineId);
+
+  // Re-parse the UNCHANGED body — the orphan prune must find nothing to delete.
+  parseStoredUpdates(db);
+
+  const tag = db
+    .prepare("SELECT line_id FROM line_tags WHERE line_id = ? AND kind = 'category'")
+    .get(sentinelLineId) as { line_id: string } | undefined;
+  expect(tag).toBeDefined();
+  db.close();
+});
+
+test("the lines table carries the nullable nesting columns", () => {
+  const db = openDb(":memory:");
+  const cols = (db.prepare("PRAGMA table_info(lines)").all() as { name: string }[]).map((c) => c.name);
+  expect(cols).toContain("subheader");
+  expect(cols).toContain("parent_line_index");
+  db.close();
+});
+
+test("nested bullets persist a non-null subheader + parent_line_index to SQLite", () => {
+  const db = openDb(":memory:");
+  seedUpdate(db, cs2);
+  parseStoredUpdates(db);
+
+  const linked = db
+    .prepare("SELECT text, subheader, parent_line_index FROM lines WHERE subheader IS NOT NULL AND parent_line_index IS NOT NULL")
+    .all() as Pick<LineRow, "text" | "subheader" | "parent_line_index">[];
+  expect(linked.length).toBeGreaterThan(0);
+  for (const row of linked) {
+    expect(typeof row.subheader).toBe("string");
+    expect(typeof row.parent_line_index).toBe("number");
+  }
+  db.close();
+});
+
+test("stored line text is the extracted cleaned string, never a stringified ParsedLine", () => {
+  const db = openDb(":memory:");
+  seedUpdate(db, cs2);
+  parseStoredUpdates(db);
+
+  const rows = db.prepare("SELECT text FROM lines").all() as Pick<LineRow, "text">[];
+  expect(rows.length).toBeGreaterThan(0);
+  // (a) every row is a real string and none is a stringified object
+  for (const { text } of rows) {
+    expect(typeof text).toBe("string");
+    expect(text).not.toContain("[object Object]");
+  }
+  // (b) a specific known bullet's cleaned text matches exactly — proving `.text`
+  //     was extracted, not the whole ParsedLine object.
+  const texts = rows.map((r) => r.text);
+  expect(texts).toContain("Premier Season Five has begun");
+  db.close();
+});
+
+// ---------------------------------------------------------------------------
+// Cross-era golden-file lock: real Valve notes frozen from the live feed, one
+// per structural era plus edge cases. Each asserts STRUCTURAL counts (section
+// count + per-section line counts), preserved nesting, and no-leak negatives —
+// never a full-body snapshot, so minor Valve text edits can't make them brittle.
+// ---------------------------------------------------------------------------
+
+interface Golden {
+  /** Fixture filename. */
+  file: string;
+  /** Expected number of parsed sections (document order). */
+  sections: number;
+  /** Expected line count per section, in document order. */
+  lineCounts: number[];
+}
+
+/** Frozen structural expectations captured from the parser over each fixture. */
+const GOLDEN: Golden[] = [
+  { file: "csgo-2013-crlf.json", sections: 6, lineCounts: [1, 6, 3, 1, 3, 2] },
+  { file: "csgo-2018-lf.json", sections: 6, lineCounts: [1, 2, 1, 3, 1, 39] },
+  { file: "csgo-2021-lf.json", sections: 3, lineCounts: [4, 2, 2] },
+  { file: "cs2-2023-richtext.json", sections: 8, lineCounts: [2, 15, 14, 10, 2, 4, 11, 3] },
+  { file: "cs2-2026-richtext.json", sections: 10, lineCounts: [3, 1, 11, 5, 2, 1, 22, 5, 1, 9] },
+  { file: "cs2-2023-btag-header.json", sections: 6, lineCounts: [1, 2, 1, 7, 5, 1] },
+  { file: "edge-headerless.json", sections: 1, lineCounts: [3] },
+  { file: "edge-off-title-allowlisted.json", sections: 4, lineCounts: [2, 4, 19, 12] },
+  { file: "edge-nested-map-subheader.json", sections: 3, lineCounts: [3, 8, 14] },
+];
+
+for (const g of GOLDEN) {
+  test(`golden: ${g.file} parses into the expected section/line structure with no leaks`, () => {
+    const fx = loadFixture(g.file);
+    const sections = parseBody(fx.contents, fx.date);
+
+    // Structural counts (D-14) — assert shape, not text blobs.
+    expect(sections.length).toBe(g.sections);
+    expect(sections.map((s) => s.lines.length)).toEqual(g.lineCounts);
+
+    // Every titled section carries at least one line (nothing empty was kept).
+    for (const s of sections) {
+      if (s.header !== null) expect(s.lines.length).toBeGreaterThan(0);
+    }
+
+    // No-leak negatives + positive stored-text: every produced line is a real,
+    // non-empty string, carries no residual markup/image/bracket, and is never
+    // a stringified ParsedLine object.
+    for (const s of sections) {
+      for (const line of s.lines) {
+        expect(typeof line.text).toBe("string");
+        expect(line.text.length).toBeGreaterThan(0);
+        expect(line.text).not.toContain("[object Object]");
+        expect(line.text).not.toMatch(FORBIDDEN);
+      }
+    }
+  });
+}
+
+test("inline-formatting-wrapped headers split into their real named sections with no bracket leak", () => {
+  const fx = loadFixture("cs2-2023-btag-header.json");
+  const sections = parseBody(fx.contents, fx.date);
+
+  // (a) The note is NOT collapsed into a single header:null block.
+  expect(sections.length).toBeGreaterThan(1);
+
+  // (b) The wrapped headers are re-detected as their real named sections.
+  const headers = sections.map((s) => s.header).filter((h): h is string => h !== null);
+  expect(headers).toContain("CASE DROPS");
+  expect(headers).toContain("MAPS");
+  expect(headers).toContain("WEAPONS");
+  expect(headers).toContain("WORKSHOP TOOLS");
+
+  // (c) Every titled section carries at least one line.
+  for (const s of sections) {
+    if (s.header !== null) expect(s.lines.length).toBeGreaterThan(0);
+  }
+
+  // (d) No bracket-wrapped header text leaks into searchable line text — the
+  //     `\[` no-leak assertion runs against this real affected body.
+  for (const s of sections) {
+    for (const line of s.lines) {
+      expect(line.text).not.toMatch(FORBIDDEN);
+    }
+  }
+});
+
+test("golden: a known CS:GO 2013 line's cleaned text matches exactly (positive lock)", () => {
+  const fx = loadFixture("csgo-2013-crlf.json");
+  const sections = parseBody(fx.contents, fx.date);
+  // The pre-header intro line is a stable, exact cleaned string — proving the
+  // parser emits real text, not a coincidentally count-satisfying blob.
+  expect(sections[0].lines[0].text).toBe("Release Notes for 12/18/2013");
+});
+
+test("golden: headerless note yields exactly one header:null section, nothing dropped", () => {
+  const fx = loadFixture("edge-headerless.json");
+  const sections = parseBody(fx.contents, fx.date);
+  expect(sections.length).toBe(1);
+  expect(sections[0].header).toBeNull();
+  expect(sections[0].lines.length).toBeGreaterThan(0);
+});
+
+test("golden: off-title allow-listed real parses into at least one non-empty line", () => {
+  const fx = loadFixture("edge-off-title-allowlisted.json");
+  const sections = parseBody(fx.contents, fx.date);
+  const lines = sections.flatMap((s) => s.lines);
+  expect(lines.length).toBeGreaterThan(0);
+  for (const line of lines) {
+    expect(typeof line.text).toBe("string");
+    expect(line.text.length).toBeGreaterThan(0);
+  }
+});
+
+test("golden: nested-map note persists a non-null subheader + parent_line_index whose text is a real cleaned string", () => {
+  const db = openDb(":memory:");
+  const fx = loadFixture("edge-nested-map-subheader.json");
+  seedUpdate(db, fx);
+  parseStoredUpdates(db);
+
+  const linked = db
+    .prepare(
+      "SELECT text, subheader, parent_line_index FROM lines WHERE subheader IS NOT NULL AND parent_line_index IS NOT NULL",
+    )
+    .all() as Pick<LineRow, "text" | "subheader" | "parent_line_index">[];
+
+  // At least one map bullet is linked to its map subheader (D-12).
+  expect(linked.length).toBeGreaterThan(0);
+  for (const row of linked) {
+    expect(typeof row.subheader).toBe("string");
+    expect(typeof row.parent_line_index).toBe("number");
+    // The DB write path extracted ParsedLine.text — never the whole object.
+    expect(typeof row.text).toBe("string");
+    expect(row.text).not.toContain("[object Object]");
+  }
+
+  // A specific map subheader ("Inferno") links a specific bullet — the exact
+  // parent→child relationship the later attribution pass depends on.
+  const inferno = linked.find((r) => r.subheader === "Inferno");
+  expect(inferno).toBeDefined();
+  expect(inferno?.text).toBe("Balcony at Bombsite A has been extended.");
   db.close();
 });
