@@ -46,6 +46,33 @@ interface CanonicalFragmentRow {
   document_id: string;
   group_anchor_block_id: string | null;
   posted_at: number;
+  block_kind: string;
+}
+
+function selectCrossDocumentDirectRow(
+  rows: readonly CanonicalFragmentRow[],
+  headingDocumentId: string,
+): CanonicalFragmentRow | undefined {
+  return rows.find(
+    (row) => row.document_id !== headingDocumentId && row.block_kind !== "heading",
+  );
+}
+
+function buildTitleOnlyQueryCandidates(titles: readonly string[]): string[] {
+  const uniqueTitles = [...new Set(titles.map((title) => title.trim()).filter(Boolean))];
+  uniqueTitles.sort((left, right) => {
+    const leftHasDate = /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(left);
+    const rightHasDate = /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(right);
+    return Number(rightHasDate) - Number(leftHasDate) || left.localeCompare(right);
+  });
+  const candidates: string[] = [];
+  for (const title of uniqueTitles) {
+    const escapedTitle = title.replaceAll('"', '\\"');
+    candidates.push(`"${escapedTitle}"`, title);
+    const date = title.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/)?.[0];
+    if (date !== undefined) candidates.push(`"${date}"`, date);
+  }
+  return [...new Set(candidates)].filter((query) => query.length <= 200);
 }
 
 function requireLiveValue(name: "SQLITE_PATH" | "MEILI_HOST" | "MEILI_MASTER_KEY"): string {
@@ -114,6 +141,38 @@ test("the live canonical suite is opt-in and has a dedicated workspace command",
   } else {
     expect(process.env.RUN_LIVE_CANONICAL).not.toBe("1");
   }
+});
+
+test("controlled direct fixture selection excludes heading fragments", () => {
+  const rows: CanonicalFragmentRow[] = [
+    {
+      fragment_id: "other-heading",
+      block_id: "other-anchor",
+      document_id: "doc-b",
+      group_anchor_block_id: "other-anchor",
+      posted_at: 2,
+      block_kind: "heading",
+    },
+    {
+      fragment_id: "other-direct",
+      block_id: "other-change",
+      document_id: "doc-b",
+      group_anchor_block_id: "other-anchor",
+      posted_at: 2,
+      block_kind: "patch_change",
+    },
+  ];
+  expect(selectCrossDocumentDirectRow(rows, "doc-a")?.fragment_id).toBe("other-direct");
+});
+
+test("title-only discovery prioritizes date-bearing full-title phrases", () => {
+  const candidates = buildTitleOnlyQueryCandidates([
+    "Counter-Strike 2 Update",
+    "Release Notes for 10/24/2024",
+  ]);
+  expect(candidates[0]).toBe('"Release Notes for 10/24/2024"');
+  expect(candidates).toContain('"10/24/2024"');
+  expect(candidates).toContain("10/24/2024");
 });
 
 const describeLive = LIVE_ENABLED ? describe : describe.skip;
@@ -216,9 +275,10 @@ describeLive("live canonical fragment search and SQLite hydration", () => {
     const rows = db
       .prepare(
         `SELECT sf.id AS fragment_id, sf.block_id, sf.document_id,
-                sf.group_anchor_block_id, d.posted_at
+                sf.group_anchor_block_id, d.posted_at, b.kind AS block_kind
            FROM search_fragments sf
            JOIN documents d ON d.id = sf.document_id
+           JOIN blocks b ON b.id = sf.block_id AND b.document_id = sf.document_id
           WHERE sf.group_anchor_block_id IS NOT NULL
           ORDER BY sf.document_id, sf.fragment_order`,
       )
@@ -229,7 +289,9 @@ describeLive("live canonical fragment search and SQLite hydration", () => {
         row.block_id !== row.group_anchor_block_id &&
         row.group_anchor_block_id === heading?.group_anchor_block_id,
     );
-    const other = rows.find((row) => row.document_id !== heading?.document_id);
+    const other = heading === undefined
+      ? undefined
+      : selectCrossDocumentDirectRow(rows, heading.document_id);
     expect({ heading, child, other }).toMatchObject({
       heading: expect.any(Object),
       child: expect.any(Object),
@@ -266,18 +328,12 @@ describeLive("live canonical fragment search and SQLite hydration", () => {
     const titles = db
       .prepare("SELECT id, title FROM documents WHERE content_kind = 'patch_notes' ORDER BY id")
       .all() as Array<{ id: string; title: string }>;
-    const candidates = [...new Set(
-      titles.flatMap(({ title }) =>
-        title
-          .toLocaleLowerCase("en-US")
-          .match(/[a-z0-9]{5,}/g) ?? [],
-      ),
-    )].sort((left, right) => right.length - left.length || left.localeCompare(right));
+    const candidates = buildTitleOnlyQueryCandidates(titles.map(({ title }) => title));
     const index = meili.index<LiveHit>(INDEX_UID);
     let proof:
       | { query: string; documentId: string; raw: LiveHit[]; earliestRank: number }
       | undefined;
-    for (const query of candidates.slice(0, 120)) {
+    for (const query of candidates) {
       const raw = (
         await index.search(query, {
           limit: 50,
@@ -288,16 +344,16 @@ describeLive("live canonical fragment search and SQLite hydration", () => {
       ).hits as LiveHit[];
       const byDocument = Map.groupBy(raw.entries(), ([, hit]) => hit.document_id);
       for (const [documentId, entries] of byDocument) {
-        const titleOnly = entries.filter(([, hit]) => {
+        const titleOnly = entries.every(([, hit]) => {
           const fields = Object.keys(hit._matchesPosition ?? {});
           return fields.length === 1 && fields[0] === "title";
         });
-        if (titleOnly.length >= 2) {
+        if (entries.length >= 2 && titleOnly) {
           proof = {
             query,
             documentId,
             raw,
-            earliestRank: titleOnly[0]![0],
+            earliestRank: entries[0]![0],
           };
           break;
         }
