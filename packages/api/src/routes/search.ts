@@ -22,6 +22,12 @@ const RETRIEVED_ATTRIBUTES = [
   "fragment_kind",
   "content_kind",
   "posted_at",
+  // Match positions are only emitted for attributes returned by the search.
+  // These values are used as internal match evidence and are never serialized;
+  // response display text is hydrated exclusively from SQLite below.
+  "text",
+  "title",
+  "ancestor_labels",
 ] as const;
 
 interface RawFragmentHit {

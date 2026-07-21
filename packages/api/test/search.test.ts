@@ -109,12 +109,10 @@ test("GET /search?q=grenade hydrates ranked identifiers from SQLite", async () =
       showMatchesPosition: true,
     }),
   );
-  expect(searchMock).toHaveBeenCalledTimes(4);
-  expect(searchMock.mock.calls.slice(1).map((call) => call[1]?.attributesToSearchOn)).toEqual([
-    ["text"],
-    ["title"],
-    ["ancestor_labels"],
-  ]);
+  expect(searchMock).toHaveBeenCalledTimes(1);
+  expect(searchMock.mock.calls[0]?.[1]?.attributesToRetrieve).toEqual(
+    expect.arrayContaining(["text", "title", "ancestor_labels"]),
+  );
   const serialized = JSON.stringify(body);
   expect(serialized).not.toContain("STALE MEILI TEXT");
   expect(serialized).not.toContain("STALE MEILI TITLE");
@@ -137,12 +135,9 @@ test("title-restricted evidence produces one earliest-rank SQLite document repre
     fragment_kind: "block_text",
     content_kind: "patch_notes",
     posted_at: 200,
+    _matchesPosition: { title: [{ start: 0, length: 12 }] },
   };
-  searchMock
-    .mockResolvedValueOnce({ hits: [titleHit, { ...titleHit }], query: "SQLite Alpha" })
-    .mockResolvedValueOnce({ hits: [], query: "SQLite Alpha" })
-    .mockResolvedValueOnce({ hits: [titleHit, { ...titleHit }], query: "SQLite Alpha" })
-    .mockResolvedValueOnce({ hits: [], query: "SQLite Alpha" });
+  searchMock.mockResolvedValueOnce({ hits: [titleHit, { ...titleHit }], query: "SQLite Alpha" });
 
   const app = buildServer();
   const res = await app.inject({
@@ -157,11 +152,12 @@ test("title-restricted evidence produces one earliest-rank SQLite document repre
     document_id: "doc-a",
     representative_text: "SQLite Alpha",
   });
-  expect(searchMock.mock.calls.slice(1).map((call) => call[1])).toEqual([
-    expect.objectContaining({ attributesToSearchOn: ["text"] }),
-    expect.objectContaining({ attributesToSearchOn: ["title"] }),
-    expect.objectContaining({ attributesToSearchOn: ["ancestor_labels"] }),
-  ]);
+  expect(searchMock.mock.calls[0]?.[1]).toEqual(
+    expect.objectContaining({
+      attributesToRetrieve: expect.arrayContaining(["title"]),
+      showMatchesPosition: true,
+    }),
+  );
   await app.close();
 });
 
