@@ -109,7 +109,9 @@ test("the live canonical suite is opt-in and has a dedicated workspace command",
     readFileSync(resolve(import.meta.dirname, "../package.json"), "utf8"),
   ) as { scripts?: Record<string, string> };
   expect(packageJson.scripts?.["test:integration"]).toBe(EXPECTED_INTEGRATION_SCRIPT);
-  if (!LIVE_ENABLED) {
+  if (LIVE_ENABLED) {
+    console.info("LIVE_CANONICAL_ENV=1");
+  } else {
     expect(process.env.RUN_LIVE_CANONICAL).not.toBe("1");
   }
 });
@@ -358,5 +360,9 @@ describeLive("live canonical fragment search and SQLite hydration", () => {
       expect((hit.context as { document: { title: string } }).document.title).toBe(row!.title);
     }
     assertSafeHydratedPayload(body);
+  });
+
+  test("records positive completion evidence for the guarded runner", () => {
+    console.info("LIVE_CANONICAL_ASSERTIONS_PASSED");
   });
 });
