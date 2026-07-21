@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import test from "node:test";
 
@@ -84,7 +85,7 @@ console.log("npm shim: pass");
     `#!/usr/bin/env node
 import { appendFileSync, copyFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import Database from "better-sqlite3";
+import Database from ${JSON.stringify(pathToFileURL(join(PROJECT_ROOT, "node_modules/better-sqlite3/lib/index.js")).href)};
 
 const argv = process.argv.slice(2);
 const record = { tool: "docker", argv };
