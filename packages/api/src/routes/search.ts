@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
+  applyHydrationBudget,
   collapseRankedGroupHits,
   type ContentKind,
   type RankedFragmentHit,
@@ -123,7 +124,11 @@ export async function searchRoutes(app: FastifyInstance): Promise<void> {
       requests = collapseRankedGroupHits(rankedHits);
     }
 
-    const hydrated = hydrator.hydrate(requests);
-    return { hits: hydrated.matches };
+    // A single legal limit can collapse into more requests than the hydration
+    // cap. Bound the request set deterministically so no legal limit throws /
+    // 500s, and surface explicit truncation metadata when the window is cut.
+    const budgeted = applyHydrationBudget(requests);
+    const hydrated = hydrator.hydrate(budgeted.requests);
+    return { hits: hydrated.matches, truncation: budgeted.budget };
   });
 }

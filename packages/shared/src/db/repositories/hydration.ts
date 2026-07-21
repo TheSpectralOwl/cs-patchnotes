@@ -93,6 +93,24 @@ export interface HydrationResult {
   missing: RankedHydrationRequest[];
 }
 
+/**
+ * Explicit accounting of how a collapsed request set was fitted to the hydration
+ * cap. `request_count` is the deduplicated post-collapse total, `hydrated_count`
+ * is what was actually resolved, and `truncated` signals that lower-priority
+ * requests were dropped so callers can tell the window was cut.
+ */
+export interface HydrationBudget {
+  truncated: boolean;
+  request_count: number;
+  hydrated_count: number;
+  dropped_count: number;
+}
+
+export interface BudgetedHydrationRequests {
+  requests: RankedHydrationRequest[];
+  budget: HydrationBudget;
+}
+
 interface ResolvedRequestRow {
   request_index: number;
   kind: RankedHydrationRequest["kind"];
@@ -231,6 +249,32 @@ export function collapseRankedGroupHits(
   return [...requests.values()].sort(compareRequests);
 }
 
+/**
+ * Fit a collapsed request set to the hydration cap deterministically. A single
+ * legal search limit can amplify past `MAX_HYDRATE_IDS` (each ranked hit may emit
+ * a direct, subgroup, and document request), which would otherwise make
+ * hydration throw and the route 500. Requests are deduplicated and ordered by the
+ * canonical rank -> kind -> id precedence, then the first `MAX_HYDRATE_IDS` are
+ * kept so every legal limit yields a bounded, successful hydration. When
+ * lower-priority requests are dropped, the returned budget reports the cut.
+ */
+export function applyHydrationBudget(
+  requests: readonly RankedHydrationRequest[],
+): BudgetedHydrationRequests {
+  const ordered = deduplicateRequests(requests);
+  const kept = ordered.slice(0, MAX_HYDRATE_IDS);
+  const droppedCount = ordered.length - kept.length;
+  return {
+    requests: kept,
+    budget: {
+      truncated: droppedCount > 0,
+      request_count: ordered.length,
+      hydrated_count: kept.length,
+      dropped_count: droppedCount,
+    },
+  };
+}
+
 function requestValues(requests: readonly RankedHydrationRequest[]): {
   sql: string;
   bindings: unknown[];
@@ -359,9 +403,25 @@ export function hydrateRankedFragments(
                THEN fragment.document_id
              WHEN requested.kind = 'subgroup' THEN anchor.document_id
              WHEN requested.kind = 'document' THEN requested.requested_id
-             ELSE NULL
-           END
+               ELSE NULL
+             END
           AND document.content_kind = 'patch_notes'
+          -- Only hydrate output bound to the exact current source head with a
+          -- selected + complete parse state. Retained blocks/fragments from a
+          -- superseded, quarantined, or failed current source stay in SQLite as
+          -- private history but must never reach a response. This mirrors the
+          -- projection guard on the reindex read path.
+          AND EXISTS (
+            SELECT 1
+              FROM document_source_heads head
+              JOIN document_parse_state state
+                ON state.document_id = head.document_id
+               AND state.source_adapter = head.source_adapter
+               AND state.source_record_id = head.source_record_id
+             WHERE head.document_id = document.id
+               AND state.selection_state = 'selected'
+               AND state.materialization_status = 'complete'
+          )
         ORDER BY requested.request_index`,
     )
     .all(...requested.bindings) as ResolvedRequestRow[];
