@@ -218,3 +218,57 @@ describe("immutable source revision history", () => {
     }
   });
 });
+
+describe("historical revision replay cannot rewind the current head", () => {
+  test("replaying a non-current body leaves the head at the true latest revision", () => {
+    const db = database();
+    const a = upsertSteamSourceRecord(db, input({ pristine_body: "body A", fetched_at: 1 }));
+    const b = upsertSteamSourceRecord(db, input({ pristine_body: "body B", fetched_at: 2 }));
+    const c = upsertSteamSourceRecord(db, input({ pristine_body: "body C", fetched_at: 3 }));
+
+    expect(getCurrentSourceRecord(db, a.document.id, "steam_news")?.id).toBe(c.source_record.id);
+    expect(count(db, "source_records")).toBe(3);
+
+    // Re-ingest the previously seen, now non-current body A.
+    const replayA = upsertSteamSourceRecord(db, input({ pristine_body: "body A", fetched_at: 4 }));
+
+    // The replay reuses A's immutable row without appending a duplicate...
+    expect(replayA.created_source_record).toBe(false);
+    expect(replayA.source_record.id).toBe(a.source_record.id);
+    expect(count(db, "source_records")).toBe(3);
+    // ...and, crucially, must NOT rewind the authoritative head away from C.
+    expect(getCurrentSourceRecord(db, a.document.id, "steam_news")?.id).toBe(c.source_record.id);
+  });
+
+  test("a brand-new revision after a historical replay supersedes the true head, not the replay", () => {
+    const db = database();
+    const a = upsertSteamSourceRecord(db, input({ pristine_body: "body A", fetched_at: 1 }));
+    upsertSteamSourceRecord(db, input({ pristine_body: "body B", fetched_at: 2 }));
+    const c = upsertSteamSourceRecord(db, input({ pristine_body: "body C", fetched_at: 3 }));
+
+    // Replay the historical body A between C and the next genuinely new revision.
+    upsertSteamSourceRecord(db, input({ pristine_body: "body A", fetched_at: 4 }));
+
+    const d = upsertSteamSourceRecord(db, input({ pristine_body: "body D", fetched_at: 5 }));
+
+    expect(d.created_source_record).toBe(true);
+    expect(getCurrentSourceRecord(db, a.document.id, "steam_news")?.id).toBe(d.source_record.id);
+    // Lineage must not fork onto A: D supersedes the true current head C.
+    expect(d.source_record.supersedes_source_record_id).toBe(c.source_record.id);
+  });
+
+  test("re-ingesting the already-current body is a stable no-op", () => {
+    const db = database();
+    upsertSteamSourceRecord(db, input({ pristine_body: "body A", fetched_at: 1 }));
+    upsertSteamSourceRecord(db, input({ pristine_body: "body B", fetched_at: 2 }));
+    const c = upsertSteamSourceRecord(db, input({ pristine_body: "body C", fetched_at: 3 }));
+
+    const replayC = upsertSteamSourceRecord(db, input({ pristine_body: "body C", fetched_at: 4 }));
+
+    expect(replayC.created_source_record).toBe(false);
+    expect(replayC.source_record.id).toBe(c.source_record.id);
+    expect(count(db, "source_records")).toBe(3);
+    expect(count(db, "document_source_heads")).toBe(1);
+    expect(getCurrentSourceRecord(db, c.document.id, "steam_news")?.id).toBe(c.source_record.id);
+  });
+});
