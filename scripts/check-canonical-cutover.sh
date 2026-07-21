@@ -73,6 +73,15 @@ if [[ ! -f "$SQLITE_PATH" ]]; then
   printf 'ERROR: approved sqlite_path is not a regular file\n' >&2
   exit 2
 fi
+if ! IFS= read -r -d '' TARGET_DIRECTORY < <(
+  node - "$SQLITE_PATH" <<'NODE'
+const { posix } = require("node:path");
+process.stdout.write(posix.dirname(process.argv[2]));
+process.stdout.write("\0");
+NODE
+); then
+  exit 2
+fi
 MANIFEST_DIRECTORY="${CUTOVER_BACKUP_MANIFEST_FILE%/*}"
 if [[ ! -d "$MANIFEST_DIRECTORY" || ! -w "$MANIFEST_DIRECTORY" ]]; then
   printf 'ERROR: backup evidence directory must already exist and be writable\n' >&2
@@ -88,13 +97,16 @@ if [[ -e "${CUTOVER_BACKUP_MANIFEST_FILE}.sqlite-backup" ]]; then
 fi
 
 CUTOVER_LOG_FILE="${CUTOVER_BACKUP_MANIFEST_FILE}.cutover.log"
-if [[ -e "$CUTOVER_LOG_FILE" ]]; then
-  printf 'ERROR: cutover log path already exists\n' >&2
+if [[ -e "$CUTOVER_LOG_FILE" && ! -f "$CUTOVER_LOG_FILE" ]]; then
+  printf 'ERROR: cutover log path exists but is not a regular file\n' >&2
   exit 2
 fi
-: >"$CUTOVER_LOG_FILE"
-chmod 600 "$CUTOVER_LOG_FILE"
+if [[ ! -e "$CUTOVER_LOG_FILE" ]]; then
+  : >"$CUTOVER_LOG_FILE"
+  chmod 600 "$CUTOVER_LOG_FILE"
+fi
 exec > >(tee -a "$CUTOVER_LOG_FILE") 2>&1
+printf '\ncutover attempt started\n'
 
 SERVICES_STARTED=0
 CUTOVER_SUCCEEDED=0
@@ -192,7 +204,7 @@ run_poller() {
   docker compose --profile seed run --rm --no-deps \
     -e "SQLITE_PATH=$SQLITE_PATH" \
     -e "CANONICAL_CUTOVER_TARGET_FILE=$CUTOVER_TARGET_FILE_ABS" \
-    -v "$SQLITE_PATH:$SQLITE_PATH" \
+    -v "$TARGET_DIRECTORY:$TARGET_DIRECTORY" \
     -v "$CUTOVER_TARGET_FILE_ABS:$CUTOVER_TARGET_FILE_ABS:ro" \
     -v "$MANIFEST_DIRECTORY:$MANIFEST_DIRECTORY" \
     poller "$@"

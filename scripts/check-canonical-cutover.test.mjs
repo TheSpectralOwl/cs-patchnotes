@@ -271,6 +271,9 @@ test("propagates arbitrary target and manifest paths through every ordered live 
       `missing exact target in ${JSON.stringify(record.argv)}`,
     );
   }
+  const expansion = databaseStages.find((record) => pollerStage(record) === "expand");
+  assert.ok(expansion.argv.includes(`${dirname(harness.target)}:${dirname(harness.target)}`));
+  assert.ok(!expansion.argv.includes(`${harness.target}:${harness.target}`));
   for (const stage of ["expand", "readiness", "finalize"]) {
     const record = databaseStages.find((candidate) => pollerStage(candidate) === stage);
     const index = record.argv.indexOf("--backup-manifest");
