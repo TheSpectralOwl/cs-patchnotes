@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   auditSources,
   formatAuditResult,
+  scanWorkspace,
 } from "./check-canonical-stale-references.mjs";
+
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("rejects unexpected source and test references with exact safe locations", () => {
   const secret = "do-not-print-this-source-body";
@@ -81,4 +86,17 @@ test("strict mode rejects even an otherwise allowlisted declaration", () => {
   const strict = auditSources([source], { mode: "strict", allowedLocations });
   assert.equal(strict.ok, false);
   assert.deepEqual(strict.unexpected, allowedLocations);
+});
+
+test("workspace contains no transitional contract references after removal", async () => {
+  const result = await scanWorkspace(PROJECT_ROOT, { mode: "strict" });
+
+  assert.deepEqual(result, {
+    ok: true,
+    mode: "strict",
+    scannedFiles: result.scannedFiles,
+    occurrences: 0,
+    unexpected: [],
+    missingAllowed: [],
+  });
 });
