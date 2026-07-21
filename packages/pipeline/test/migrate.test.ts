@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { COMMANDS } from "../src/cli.js";
+import { COMMANDS, main } from "../src/cli.js";
 import {
   parseAuditCanonicalArgs,
   parseMigrateCanonicalArgs,
@@ -404,7 +404,7 @@ describe("canonical expansion and audit", () => {
   });
 });
 
-test("CLI registry exposes only expansion and strict audit contracts", () => {
+test("CLI registry exposes only expansion and strict audit contracts", async () => {
   expect(COMMANDS["migrate-canonical"]).toEqual({
     module: "./migrate.js",
     runner: "runMigrateCanonical",
@@ -418,4 +418,14 @@ test("CLI registry exposes only expansion and strict audit contracts", () => {
   expect(() => parseMigrateCanonicalArgs(["--stage", "expand", "--bogus"])).toThrow();
   expect(() => parseAuditCanonicalArgs([])).toThrow();
   expect(() => parseAuditCanonicalArgs(["--strict", "--bogus"])).toThrow();
+
+  const originalArgv = process.argv;
+  try {
+    process.argv = ["node", "pipeline", "migrate-canonical"];
+    await expect(main()).rejects.toThrow(/stage expand/i);
+    process.argv = ["node", "pipeline", "migrate-canonical", "--unknown"];
+    await expect(main()).rejects.toThrow(/unknown/i);
+  } finally {
+    process.argv = originalArgv;
+  }
 });

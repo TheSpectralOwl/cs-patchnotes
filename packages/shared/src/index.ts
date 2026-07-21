@@ -23,4 +23,9 @@ export type EnvVarName =
 export * from "./types.js";
 export * from "./db/ids.js";
 export * from "./db/repositories/documents.js";
+export {
+  inspectSchemaVersion,
+  LATEST_SCHEMA_VERSION,
+  runMigrations,
+} from "./db/migrations.js";
 export { openDb } from "./db/client.js";

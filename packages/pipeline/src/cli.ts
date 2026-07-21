@@ -29,6 +29,8 @@ export const COMMANDS: Record<string, Subcommand> = {
   parse: { module: "./parse.js", runner: "runParse" },
   reindex: { module: "./reindex.js", runner: "runReindex" },
   rebuild: { module: "./reindex.js", runner: "runRebuild" },
+  "migrate-canonical": { module: "./migrate.js", runner: "runMigrateCanonical" },
+  "audit-canonical": { module: "./migrate.js", runner: "runAuditCanonical" },
 };
 
 export async function main(): Promise<void> {
