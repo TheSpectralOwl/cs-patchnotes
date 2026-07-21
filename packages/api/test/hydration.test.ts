@@ -84,6 +84,52 @@ function insertFragment(
   );
 }
 
+/**
+ * Bind a document to a current source head with the given parse state. Hydration
+ * only returns display data when the current head is `selected` + `complete`, so
+ * projectable fixtures must carry that state; obsolete fixtures deliberately do
+ * not (quarantined/failed current source), reproducing retained-but-superseded
+ * material that must never be hydrated.
+ */
+function seedSourceHead(
+  db: Database,
+  input: {
+    documentId: string;
+    sourceRecordId: string;
+    bodySha: string;
+    selectionState:
+      | "selected"
+      | "unselected"
+      | "quarantined_zero_match"
+      | "quarantined_multiple_match";
+    materializationStatus: "unparsed" | "complete" | "partial" | "failed";
+  },
+): void {
+  const selected = input.selectionState === "selected";
+  db.prepare(
+    `INSERT INTO source_records
+       (id, document_id, source_adapter, body_format, pristine_body, body_sha256, fetched_at)
+     VALUES (?, ?, 'steam_news', 'bbcode', '[b]body[/b]', ?, 100)`,
+  ).run(input.sourceRecordId, input.documentId, input.bodySha);
+  db.prepare(
+    `INSERT INTO document_source_heads (document_id, source_adapter, source_record_id, updated_at)
+     VALUES (?, 'steam_news', ?, 100)`,
+  ).run(input.documentId, input.sourceRecordId);
+  db.prepare(
+    `INSERT INTO document_parse_state
+       (document_id, source_adapter, source_record_id, selection_state,
+        parser_key, parser_version, materialization_status, updated_at)
+     VALUES (?, 'steam_news', ?, ?, ?, ?, ?, 100)`,
+  ).run(
+    input.documentId,
+    input.sourceRecordId,
+    input.selectionState,
+    selected ? "steam-news-bbcode" : null,
+    selected ? "1" : null,
+    input.materializationStatus,
+  );
+}
+
 function seedCanonicalDb(): Database {
   const db = openDb(":memory:");
   insertDocument(db, "doc-a", "Authoritative Alpha", 200);
@@ -201,6 +247,49 @@ function seedCanonicalDb(): Database {
     blockId: "supplemental-change",
     order: 0,
     text: "Supplemental text",
+  });
+
+  // Projectable documents carry a selected + complete current head.
+  seedSourceHead(db, {
+    documentId: "doc-a",
+    sourceRecordId: "src-a",
+    bodySha: "a".repeat(64),
+    selectionState: "selected",
+    materializationStatus: "complete",
+  });
+  seedSourceHead(db, {
+    documentId: "doc-b",
+    sourceRecordId: "src-b",
+    bodySha: "b".repeat(64),
+    selectionState: "selected",
+    materializationStatus: "complete",
+  });
+
+  // Obsolete document: retained blocks/fragments remain in SQLite as private
+  // history, but the current head is quarantined + failed, so hydration must
+  // never surface its material.
+  insertDocument(db, "doc-obsolete", "Obsolete Gamma", 200);
+  insertBlock(db, {
+    id: "obsolete-change",
+    documentId: "doc-obsolete",
+    kind: "patch_change",
+    preorder: 0,
+    siblingOrder: 0,
+    text: "Obsolete retained change",
+  });
+  insertFragment(db, {
+    id: "frag-obsolete",
+    documentId: "doc-obsolete",
+    blockId: "obsolete-change",
+    order: 0,
+    text: "Obsolete retained change",
+  });
+  seedSourceHead(db, {
+    documentId: "doc-obsolete",
+    sourceRecordId: "src-obsolete",
+    bodySha: "c".repeat(64),
+    selectionState: "quarantined_zero_match",
+    materializationStatus: "failed",
   });
   return db;
 }
@@ -505,6 +594,27 @@ describe("bounded SQLite hydration", () => {
     const result = hydrateRankedFragments(db, requests);
     expect(result.matches).toEqual([]);
     expect(result.missing).toEqual(requests);
+  });
+
+  test("never hydrates a document whose current source head is quarantined or failed", () => {
+    const result = hydrateRankedFragments(db, [
+      { kind: "document", document_id: "doc-obsolete", rank: 0 },
+      { kind: "direct", fragment_id: "frag-obsolete", rank: 1 },
+    ]);
+    expect(result.matches).toEqual([]);
+    expect(result.missing).toEqual([
+      { kind: "document", document_id: "doc-obsolete", rank: 0 },
+      { kind: "direct", fragment_id: "frag-obsolete", rank: 1 },
+    ]);
+    expect(JSON.stringify(result)).not.toContain("Obsolete retained change");
+  });
+
+  test("still hydrates documents whose current source head is selected + complete", () => {
+    const result = hydrateRankedFragments(db, [
+      { kind: "document", document_id: "doc-a", rank: 0 },
+    ]);
+    expect(result.matches.map((match) => match.document_id)).toEqual(["doc-a"]);
+    expect(result.missing).toEqual([]);
   });
 
   test("deduplicates each request key at its independently retained first rank", () => {

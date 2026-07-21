@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { openDb } from "@cs-patchnotes/shared";
+import { MAX_HYDRATE_IDS, openDb } from "@cs-patchnotes/shared";
 
 // Mock the server-side Meili factory so the route never needs a live Meili.
 // The spy is hoisted so the mock factory (also hoisted) can close over it.
@@ -53,6 +53,29 @@ beforeAll(() => {
       text,
       "0".repeat(64),
     );
+  }
+  // Hydration only returns display data for documents whose current source head
+  // is selected + complete, so the fixtures must carry that state.
+  for (const [documentId, sourceRecordId, bodySha] of [
+    ["doc-a", "src-a", "a".repeat(64)],
+    ["doc-b", "src-b", "b".repeat(64)],
+    ["doc-c", "src-c", "c".repeat(64)],
+  ]) {
+    db.prepare(
+      `INSERT INTO source_records
+         (id, document_id, source_adapter, body_format, pristine_body, body_sha256, fetched_at)
+       VALUES (?, ?, 'steam_news', 'bbcode', '[b]body[/b]', ?, 100)`,
+    ).run(sourceRecordId, documentId, bodySha);
+    db.prepare(
+      `INSERT INTO document_source_heads (document_id, source_adapter, source_record_id, updated_at)
+       VALUES (?, 'steam_news', ?, 100)`,
+    ).run(documentId, sourceRecordId);
+    db.prepare(
+      `INSERT INTO document_parse_state
+         (document_id, source_adapter, source_record_id, selection_state,
+          parser_key, parser_version, materialization_status, updated_at)
+       VALUES (?, 'steam_news', ?, 'selected', 'steam-news-bbcode', '1', 'complete', 100)`,
+    ).run(documentId, sourceRecordId);
   }
   db.close();
 });
@@ -242,6 +265,55 @@ test("GET /search clamps an over-limit `limit` to <= 50", async () => {
   const opts = searchMock.mock.calls[0]?.[1] as { limit: number };
   expect(opts.limit).toBeLessThanOrEqual(50);
   expect(opts.limit).toBe(50);
+  await app.close();
+});
+
+test("a maximally amplified 50-hit window stays bounded and reports truncation", async () => {
+  // Every hit matches title (-> document), own non-heading text (-> direct), and
+  // ancestor_labels (-> subgroup): three independent requests per hit. 50 hits
+  // therefore collapse to 150 requests, above the hydration cap.
+  const hits = Array.from({ length: 50 }, (_, i) => ({
+    id: `frag-${i}`,
+    fragment_id: `frag-${i}`,
+    block_id: `block-${i}`,
+    document_id: `doc-${i}`,
+    primary_release_id: null,
+    group_anchor_block_id: `anchor-${i}`,
+    fragment_kind: "block_text",
+    content_kind: "patch_notes",
+    posted_at: 200,
+    _matchesPosition: {
+      title: [{ start: 0, length: 3 }],
+      text: [{ start: 0, length: 3 }],
+      ancestor_labels: [{ start: 0, length: 3 }],
+    },
+  }));
+  searchMock.mockResolvedValueOnce({ hits, query: "amplify" });
+
+  const app = buildServer();
+  const res = await app.inject({ method: "GET", url: "/search?q=amplify&limit=50" });
+  expect(res.statusCode).toBe(200);
+  const body = res.json();
+  expect(body.hits.length).toBeLessThanOrEqual(MAX_HYDRATE_IDS);
+  expect(body.truncation).toMatchObject({
+    truncated: true,
+    request_count: 150,
+    hydrated_count: MAX_HYDRATE_IDS,
+    dropped_count: 150 - MAX_HYDRATE_IDS,
+  });
+  await app.close();
+});
+
+test("a window that fits within the hydration budget reports no truncation", async () => {
+  const app = buildServer();
+  const res = await app.inject({ method: "GET", url: "/search?q=grenade" });
+  expect(res.statusCode).toBe(200);
+  const body = res.json();
+  expect(body.truncation).toMatchObject({
+    truncated: false,
+    dropped_count: 0,
+  });
+  expect(body.truncation.hydrated_count).toBe(body.truncation.request_count);
   await app.close();
 });
 
