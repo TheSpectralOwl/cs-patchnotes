@@ -208,6 +208,13 @@ function isMissingIndexError(error: unknown): boolean {
   return typeof cause === "object" && cause !== null && "code" in cause && cause.code === "index_not_found";
 }
 
+function isMissingIndexTask(task: Task): boolean {
+  if (task.status !== "failed" || typeof task.error !== "object" || task.error === null) {
+    return false;
+  }
+  return "code" in task.error && task.error.code === "index_not_found";
+}
+
 /**
  * Rebuild the disposable index from the source of truth: drop the index (waiting
  * for the delete to complete before recreating — an un-awaited delete races the
@@ -217,7 +224,8 @@ function isMissingIndexError(error: unknown): boolean {
  */
 export async function rebuild(client: Meilisearch, db: Database): Promise<ReindexResult> {
   try {
-    assertTaskSucceeded(await client.deleteIndex(INDEX_UID).waitTask());
+    const deletion = await client.deleteIndex(INDEX_UID).waitTask();
+    if (!isMissingIndexTask(deletion)) assertTaskSucceeded(deletion);
   } catch (error) {
     if (!isMissingIndexError(error)) throw error;
   }
