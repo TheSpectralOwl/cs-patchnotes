@@ -116,6 +116,9 @@ if (argv[0] === "build") {
   process.exit(0);
 }
 if (argv[0] === "compose" && has("run") && has("--entrypoint", "node")) {
+  if (process.env.HARNESS_MODE === "fail-backup-verify") {
+    console.error("backup verifier shim failure"); process.exit(9);
+  }
   console.log("backup_verified schema=0 updates=274 sections=828 lines=4173 line_tags=0");
   process.exit(0);
 }
@@ -124,6 +127,14 @@ if (argv[0] === "compose" && has("run") && argv.includes("poller")) {
   if (has("migrate-canonical", "expand")) {
     if (!manifest) throw new Error("expansion missing manifest");
     const backup = manifest + ".sqlite-backup";
+    if (statSync(target) && (() => { const db = new Database(target, { readonly: true }); const version = db.pragma("user_version", { simple: true }); db.close(); return version; })() === 1) {
+      const existing = JSON.parse(readFileSync(manifest, "utf8"));
+      if (existing.target.path !== target || existing.backup.path !== backup || existing.backup.sha256 !== hash(backup)) {
+        throw new Error("resume evidence mismatch");
+      }
+      console.log(JSON.stringify({ ok: true, stage: "expand", target_path: target, manifest_path: manifest, retry: true }));
+      process.exit(0);
+    }
     copyFileSync(target, backup);
     const targetStat = statSync(target);
     const backupStat = statSync(backup);
@@ -291,6 +302,11 @@ test("propagates arbitrary target and manifest paths through every ordered live 
   );
   assert.ok(api);
   assert.ok(api.argv.includes("RUN_LIVE_CANONICAL=1"));
+  assert.ok(
+    api.argv.includes(
+      `type=bind,src=${dirname(harness.target)},dst=${dirname(harness.target)},readonly`,
+    ),
+  );
   assert.deepEqual(api.argv.slice(api.argv.indexOf("cs-patchnotes-api-live-test:local") + 1), [
     "npm",
     "run",
@@ -326,6 +342,43 @@ test("propagates arbitrary target and manifest paths through every ordered live 
   assert.match(log, /LIVE_CANONICAL_ENV=1/);
   assert.match(log, /LIVE_CANONICAL_ASSERTIONS_PASSED/);
   assert.doesNotMatch(log, /skipped/i);
+});
+
+test("resumes only with explicit authorization and revalidates immutable expansion evidence", (t) => {
+  const harness = makeHarness(t, "fail-backup-verify");
+  const failed = runHarness(harness);
+  assert.notEqual(failed.status, 0);
+  const manifestBytes = readFileSync(harness.manifest);
+  const backupPath = `${harness.manifest}.sqlite-backup`;
+  const backupHash = sha256(backupPath);
+  const recordCount = records(harness).length;
+
+  const unauthorized = runHarness(harness, { HARNESS_MODE: "success" });
+  assert.notEqual(unauthorized.status, 0);
+  assert.equal(records(harness).length, recordCount);
+
+  const resumed = runHarness(harness, {
+    HARNESS_MODE: "success",
+    CUTOVER_RESUME: "1",
+  });
+  assert.equal(resumed.status, 0, `${resumed.stdout}\n${resumed.stderr}`);
+  assert.deepEqual(readFileSync(harness.manifest), manifestBytes);
+  assert.equal(sha256(backupPath), backupHash);
+  const resumedRecords = records(harness).slice(recordCount);
+  const stages = resumedRecords.map(pollerStage).filter(Boolean);
+  assert.deepEqual(stages, [
+    "expand",
+    "parse",
+    "parse",
+    "readiness",
+    "finalize",
+    "post-audit",
+    "rebuild",
+  ]);
+  const expansion = resumedRecords.find((record) => pollerStage(record) === "expand");
+  assert.equal(expansion.argv[expansion.argv.indexOf("--backup-manifest") + 1], harness.manifest);
+  const log = readFileSync(`${harness.manifest}.cutover.log`, "utf8");
+  assert.match(log, /resume mode: exact existing manifest and backup selected/);
 });
 
 test("rejects malformed target artifacts and relative manifests before any command", (t) => {

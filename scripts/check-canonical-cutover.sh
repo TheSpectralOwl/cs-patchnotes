@@ -15,6 +15,11 @@ require_variable() {
 require_variable CUTOVER_TARGET_FILE
 require_variable CUTOVER_BACKUP_MANIFEST_FILE
 
+if [[ "${CUTOVER_RESUME:-0}" != "0" && "${CUTOVER_RESUME:-0}" != "1" ]]; then
+  printf 'ERROR: CUTOVER_RESUME must be exactly 0 or 1\n' >&2
+  exit 2
+fi
+
 # Read the one approved value through Node and a NUL delimiter. `read -d` keeps
 # every byte representable in a POSIX path, including spaces and trailing lines.
 if ! IFS= read -r -d '' SQLITE_PATH < <(
@@ -88,12 +93,23 @@ if [[ ! -d "$MANIFEST_DIRECTORY" || ! -w "$MANIFEST_DIRECTORY" ]]; then
   exit 2
 fi
 if [[ -e "$CUTOVER_BACKUP_MANIFEST_FILE" ]]; then
-  printf 'ERROR: explicit backup manifest path already exists\n' >&2
-  exit 2
-fi
-if [[ -e "${CUTOVER_BACKUP_MANIFEST_FILE}.sqlite-backup" ]]; then
-  printf 'ERROR: manifest-owned backup path already exists\n' >&2
-  exit 2
+  if [[ "${CUTOVER_RESUME:-0}" != "1" ]]; then
+    printf 'ERROR: explicit backup manifest exists; resume requires CUTOVER_RESUME=1\n' >&2
+    exit 2
+  fi
+  if [[ ! -f "$CUTOVER_BACKUP_MANIFEST_FILE" || ! -f "${CUTOVER_BACKUP_MANIFEST_FILE}.sqlite-backup" ]]; then
+    printf 'ERROR: resume requires the exact manifest and its manifest-owned backup\n' >&2
+    exit 2
+  fi
+else
+  if [[ "${CUTOVER_RESUME:-0}" == "1" ]]; then
+    printf 'ERROR: CUTOVER_RESUME=1 requires the exact existing manifest\n' >&2
+    exit 2
+  fi
+  if [[ -e "${CUTOVER_BACKUP_MANIFEST_FILE}.sqlite-backup" ]]; then
+    printf 'ERROR: manifest-owned backup exists without its explicit manifest\n' >&2
+    exit 2
+  fi
 fi
 
 CUTOVER_LOG_FILE="${CUTOVER_BACKUP_MANIFEST_FILE}.cutover.log"
@@ -107,6 +123,9 @@ if [[ ! -e "$CUTOVER_LOG_FILE" ]]; then
 fi
 exec > >(tee -a "$CUTOVER_LOG_FILE") 2>&1
 printf '\ncutover attempt started\n'
+if [[ "${CUTOVER_RESUME:-0}" == "1" ]]; then
+  printf 'resume mode: exact existing manifest and backup selected; canonical retry validation is mandatory\n'
+fi
 
 SERVICES_STARTED=0
 CUTOVER_SUCCEEDED=0
@@ -215,7 +234,7 @@ verify_backup() {
   docker compose --profile seed run --rm --no-deps \
     --entrypoint node \
     -e "SQLITE_PATH=$SQLITE_PATH" \
-    -v "$SQLITE_PATH:$SQLITE_PATH:ro" \
+    -v "$TARGET_DIRECTORY:$TARGET_DIRECTORY" \
     -v "$MANIFEST_DIRECTORY:$MANIFEST_DIRECTORY:ro" \
     poller -e '
       const { createHash } = require("node:crypto");
@@ -299,7 +318,7 @@ printf 'live integration command: RUN_LIVE_CANONICAL=1 npm run test:integration 
 set +e
 docker run --rm \
   --network cs-patchnotes_internal \
-  --mount "type=bind,src=$SQLITE_PATH,dst=$SQLITE_PATH,readonly" \
+  --mount "type=bind,src=$TARGET_DIRECTORY,dst=$TARGET_DIRECTORY,readonly" \
   -e "SQLITE_PATH=$SQLITE_PATH" \
   -e "MEILI_HOST=http://meili:7700" \
   -e MEILI_MASTER_KEY \
