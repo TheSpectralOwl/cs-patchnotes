@@ -1,27 +1,13 @@
 import { expect, test } from "vitest";
-import { openDb } from "@cs-patchnotes/shared";
+import {
+  openDb,
+  type FragmentMatchPresence,
+  type MeiliFragmentDocument,
+  type RankedFragmentHit,
+} from "@cs-patchnotes/shared";
 import type { Meilisearch } from "meilisearch";
 import { ensureIndexAndSettings, reindexFromSqlite, rebuild } from "../src/reindex.js";
 import { COMMANDS } from "../src/cli.js";
-
-interface ProjectedDocument {
-  id: string;
-  fragment_id: string;
-  block_id: string;
-  document_id: string;
-  primary_release_id: string | null;
-  group_anchor_block_id: string | null;
-  text: string;
-  fragment_kind: "block_text" | "media_caption";
-  content_kind: "patch_notes" | "release_article" | "announcement";
-  title: string;
-  game: "csgo" | "cs2";
-  posted_at: number;
-  ancestor_ids: string[];
-  ancestor_labels: string[];
-  categories: string[];
-  entities: string[];
-}
 
 interface StubState {
   indexUids: string[];
@@ -31,7 +17,7 @@ interface StubState {
   sortable: string[];
   filterable: string[];
   primaryKeys: Array<string | undefined>;
-  batches: ProjectedDocument[][];
+  batches: MeiliFragmentDocument[][];
   order: Array<"delete" | "settings" | "load">;
 }
 
@@ -76,7 +62,7 @@ function makeStubClient(failing?: FailingOperation): { client: Meilisearch; stat
       state.filterable = attributes;
       return task("filterable", "settings");
     },
-    addDocuments: (documents: ProjectedDocument[], options?: { primaryKey?: string }) => {
+    addDocuments: (documents: MeiliFragmentDocument[], options?: { primaryKey?: string }) => {
       state.batches.push(documents);
       state.primaryKeys.push(options?.primaryKey);
       return task("load", "load");
@@ -97,7 +83,7 @@ function makeStubClient(failing?: FailingOperation): { client: Meilisearch; stat
   return { client: client as unknown as Meilisearch, state };
 }
 
-function seedCanonicalProjection(db: ReturnType<typeof openDb>): ProjectedDocument[] {
+function seedCanonicalProjection(db: ReturnType<typeof openDb>): MeiliFragmentDocument[] {
   db.prepare(
     `INSERT INTO documents (id, content_kind, title, posted_at, game, channel, parse_status)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -349,6 +335,29 @@ test("uses canonical fragment index settings with an explicit disclosure allowli
   expect(state.sortable).toEqual(["posted_at"]);
 });
 
+test("ranked-hit typing represents title-only and mixed match-field combinations", () => {
+  const combinations: FragmentMatchPresence[] = [
+    { text: false, title: true, ancestor_labels: false },
+    { text: false, title: true, ancestor_labels: true },
+    { text: true, title: true, ancestor_labels: false },
+    { text: true, title: true, ancestor_labels: true },
+  ];
+  const hits: RankedFragmentHit[] = combinations.map((matched_fields) => ({
+    id: "fragment_change",
+    fragment_id: "fragment_change",
+    block_id: "block_change",
+    document_id: "doc_alpha",
+    primary_release_id: null,
+    group_anchor_block_id: "block_mirage",
+    fragment_kind: "block_text",
+    content_kind: "patch_notes",
+    posted_at: 1_700_000_000,
+    matched_fields,
+  }));
+
+  expect(hits.map((hit) => hit.matched_fields)).toEqual(combinations);
+});
+
 test("loads deterministic batches with id as the explicit primary key", async () => {
   const db = openDb(":memory:");
   seedManyFragments(db, 1_001);
@@ -401,6 +410,25 @@ for (const operation of ["delete", "searchable", "displayed", "sortable", "filte
     db.close();
   });
 }
+
+test("allows a first rebuild when only the target index is absent", async () => {
+  const db = openDb(":memory:");
+  seedCanonicalProjection(db);
+  const { client, state } = makeStubClient();
+  const baseDelete = client.deleteIndex.bind(client);
+  client.deleteIndex = ((uid: string) => {
+    const enqueued = baseDelete(uid);
+    enqueued.waitTask = async () => {
+      state.order.push("delete");
+      throw { cause: { code: "index_not_found" } };
+    };
+    return enqueued;
+  }) as typeof client.deleteIndex;
+
+  await expect(rebuild(client, db)).resolves.toEqual({ documents: 4 });
+  expect(state.order).toContain("load");
+  db.close();
+});
 
 test("cli wires every pipeline and canonical maintenance subcommand", () => {
   expect(Object.keys(COMMANDS).sort()).toEqual([

@@ -1,13 +1,20 @@
 import type { Database } from "better-sqlite3";
 import type { Meilisearch, Task } from "meilisearch";
-import { openDb, type MeiliLineDoc } from "@cs-patchnotes/shared";
+import {
+  openDb,
+  type ContentKind,
+  type Game,
+  type MeiliFragmentDocument,
+  type MeiliLineDoc,
+  type SearchFragmentKind,
+} from "@cs-patchnotes/shared";
 import { buildMeili } from "./meili.js";
 
 /**
  * Assert an awaited Meili task actually succeeded. `waitTask()` resolves for
  * BOTH `succeeded` and `failed` tasks, so without this check a rejected batch
  * (e.g. an invalid document id) would be silently reported as a successful load.
- * The index is the source of search truth — a failed task must abort loudly.
+ * SQLite is the source of truth, so a failed projection task must abort loudly.
  */
 function assertTaskSucceeded(task: Task): void {
   if (task.status !== "succeeded") {
@@ -18,29 +25,37 @@ function assertTaskSucceeded(task: Task): void {
 }
 
 /**
- * The write-side "reindex" stage: project the SQLite source of truth into the
- * disposable Meilisearch index (one document per line).
+ * The write-side "reindex" stage projects canonical SQLite search fragments
+ * into a disposable Meilisearch ranking index.
  *
- * SQLite is authoritative; the `patch_lines` index is a rebuildable cache. This
- * module is the ONLY writer of that index — all writes flow SQLite → reindex,
- * never edited directly in Meili. Documents reserve empty `categories`/
- * `entities` arrays so a later classification pass enriches them via a JOIN
- * change here, not a reindexer rewrite.
+ * SQLite is authoritative. This module is the only index writer: all projection
+ * data flows SQLite → reindex and canonical display data is never read back from
+ * Meilisearch.
  *
  * Settings and document loads enqueue async Meili tasks; each is awaited via the
  * enqueued task's `.waitTask()` helper (never fire-and-forget) so a destructive
  * step cannot race the step that follows it.
  */
 
-/** The disposable Meilisearch index name (one document per note line). */
-export const INDEX_UID = "patch_lines";
+/** The private disposable index containing one document per canonical fragment. */
+export const INDEX_UID = "canonical_fragments";
 
-/** Attributes made full-text searchable. */
-const SEARCHABLE = ["text", "title", "section"];
-/** Attributes made sortable (seeds the recent-updates sort). */
+/** Own semantic text, document title, and hierarchy context remain distinct. */
+const SEARCHABLE = ["text", "title", "ancestor_labels"];
+/** Only identifiers and collapse metadata may be returned from the index. */
+const DISPLAYED = [
+  "id",
+  "fragment_id",
+  "block_id",
+  "document_id",
+  "primary_release_id",
+  "group_anchor_block_id",
+  "fragment_kind",
+  "content_kind",
+  "posted_at",
+];
 const SORTABLE = ["posted_at"];
-/** Attributes made filterable (seeds the disposable-rebuild discipline + future facets). */
-const FILTERABLE = ["game", "posted_at"];
+const FILTERABLE = ["game", "content_kind", "posted_at", "categories", "entities"];
 
 /** Batch size for `addDocuments` loads. */
 const BATCH_SIZE = 1000;
@@ -54,7 +69,7 @@ export interface ReindexResult {
  * One row of the lines-over-source-of-truth JOIN. `categories`/`entities` are
  * concatenated from `line_tags` (empty this phase → always null → `[]`).
  */
-interface JoinRow {
+interface LegacyJoinRow {
   id: string;
   update_id: string;
   text: string;
@@ -77,17 +92,16 @@ interface JoinRow {
  * only *adds* `categories`/`entities` to the filterable list.
  */
 export async function ensureIndexAndSettings(client: Meilisearch): Promise<void> {
-  const index = client.index<MeiliLineDoc>(INDEX_UID);
+  const index = client.index<MeiliFragmentDocument>(INDEX_UID);
   assertTaskSucceeded(await index.updateSearchableAttributes(SEARCHABLE).waitTask());
+  assertTaskSucceeded(await index.updateDisplayedAttributes(DISPLAYED).waitTask());
   assertTaskSucceeded(await index.updateSortableAttributes(SORTABLE).waitTask());
   assertTaskSucceeded(await index.updateFilterableAttributes(FILTERABLE).waitTask());
 }
 
 /**
- * Build the one-document-per-line projection from SQLite. Joins `lines` to their
- * parent `updates` and `sections`, LEFT JOINs `line_tags` (empty this phase) and
- * aggregates any category/entity tags into arrays — so once classification
- * populates `line_tags`, enrichment is this JOIN, not a rewrite.
+ * @deprecated Transitional prototype export retained for exact-reference
+ * removal. No runtime command or test calls this line-based projection.
  */
 export function buildLineDocs(db: Database): MeiliLineDoc[] {
   const rows = db
@@ -110,7 +124,7 @@ export function buildLineDocs(db: Database): MeiliLineDoc[] {
        GROUP BY l.id
        ORDER BY l.id`,
     )
-    .all() as JoinRow[];
+    .all() as LegacyJoinRow[];
 
   return rows.map((r) => ({
     id: r.id,
@@ -126,14 +140,118 @@ export function buildLineDocs(db: Database): MeiliLineDoc[] {
   }));
 }
 
+interface FragmentProjectionRow {
+  id: string;
+  block_id: string;
+  document_id: string;
+  group_anchor_block_id: string | null;
+  text: string;
+  fragment_kind: SearchFragmentKind;
+  content_kind: ContentKind;
+  title: string;
+  game: Game;
+  posted_at: number;
+}
+
+interface AncestorProjectionRow {
+  fragment_id: string;
+  ancestor_block_id: string;
+  label: string;
+}
+
+interface TagProjectionRow {
+  fragment_id: string;
+  kind: "category" | "entity";
+  value: string;
+}
+
+/** Build the complete deterministic ranking projection from canonical SQLite rows. */
+export function buildFragmentDocs(db: Database): MeiliFragmentDocument[] {
+  const fragments = db
+    .prepare(
+      `SELECT
+         sf.id,
+         b.id AS block_id,
+         sf.document_id,
+         sf.group_anchor_block_id,
+         sf.text,
+         sf.fragment_kind,
+         d.content_kind,
+         d.title,
+         d.game,
+         d.posted_at
+       FROM search_fragments sf
+       JOIN documents d
+         ON d.id = sf.document_id
+       JOIN blocks b
+         ON b.id = sf.block_id
+        AND b.document_id = sf.document_id
+       ORDER BY sf.document_id, sf.fragment_order, sf.id`,
+    )
+    .all() as FragmentProjectionRow[];
+
+  const ancestorRows = db
+    .prepare(
+      `SELECT fragment_id, ancestor_block_id, label
+       FROM fragment_ancestors
+       ORDER BY fragment_id, depth, ancestor_block_id`,
+    )
+    .all() as AncestorProjectionRow[];
+  const ancestors = new Map<string, { ids: string[]; labels: string[] }>();
+  for (const row of ancestorRows) {
+    const path = ancestors.get(row.fragment_id) ?? { ids: [], labels: [] };
+    path.ids.push(row.ancestor_block_id);
+    path.labels.push(row.label);
+    ancestors.set(row.fragment_id, path);
+  }
+
+  const tagRows = db
+    .prepare(
+      `SELECT fragment_id, kind, value
+       FROM fragment_tags
+       ORDER BY fragment_id, kind, value`,
+    )
+    .all() as TagProjectionRow[];
+  const tags = new Map<string, { categories: string[]; entities: string[] }>();
+  for (const row of tagRows) {
+    const values = tags.get(row.fragment_id) ?? { categories: [], entities: [] };
+    if (row.kind === "category") values.categories.push(row.value);
+    else values.entities.push(row.value);
+    tags.set(row.fragment_id, values);
+  }
+
+  return fragments.map((fragment) => {
+    const path = ancestors.get(fragment.id) ?? { ids: [], labels: [] };
+    const values = tags.get(fragment.id) ?? { categories: [], entities: [] };
+    return {
+      id: fragment.id,
+      fragment_id: fragment.id,
+      block_id: fragment.block_id,
+      document_id: fragment.document_id,
+      primary_release_id: null,
+      group_anchor_block_id: fragment.group_anchor_block_id,
+      text: fragment.text,
+      fragment_kind: fragment.fragment_kind,
+      content_kind: fragment.content_kind,
+      title: fragment.title,
+      game: fragment.game,
+      posted_at: fragment.posted_at,
+      ancestor_ids: path.ids,
+      ancestor_labels: path.labels,
+      categories: values.categories,
+      entities: values.entities,
+    };
+  });
+}
+
 /**
- * Project SQLite into the index: build one document per line and load them in
+ * Project SQLite into the index: build one document per fragment and load them in
  * batches with `primaryKey: "id"` so re-loading upserts (never duplicates).
  * Each batch's enqueued task is awaited.
  */
 export async function reindexFromSqlite(client: Meilisearch, db: Database): Promise<ReindexResult> {
-  const docs = buildLineDocs(db);
-  const index = client.index<MeiliLineDoc>(INDEX_UID);
+  const docs = buildFragmentDocs(db);
+  const index = client.index<MeiliFragmentDocument>(INDEX_UID);
 
   for (let i = 0; i < docs.length; i += BATCH_SIZE) {
     const batch = docs.slice(i, i + BATCH_SIZE);
@@ -141,6 +259,12 @@ export async function reindexFromSqlite(client: Meilisearch, db: Database): Prom
   }
 
   return { documents: docs.length };
+}
+
+function isMissingIndexError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("cause" in error)) return false;
+  const cause = (error as { cause?: unknown }).cause;
+  return typeof cause === "object" && cause !== null && "code" in cause && cause.code === "index_not_found";
 }
 
 /**
@@ -152,10 +276,9 @@ export async function reindexFromSqlite(client: Meilisearch, db: Database): Prom
  */
 export async function rebuild(client: Meilisearch, db: Database): Promise<ReindexResult> {
   try {
-    await client.deleteIndex(INDEX_UID).waitTask();
-  } catch {
-    // Deleting a non-existent index (e.g. the very first rebuild) is fine — the
-    // point is a guaranteed clean slate, not that a prior index existed.
+    assertTaskSucceeded(await client.deleteIndex(INDEX_UID).waitTask());
+  } catch (error) {
+    if (!isMissingIndexError(error)) throw error;
   }
   await ensureIndexAndSettings(client);
   return reindexFromSqlite(client, db);
