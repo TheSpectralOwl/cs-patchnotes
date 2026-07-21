@@ -461,11 +461,9 @@ test("allows a first rebuild when deletion completes as an index-not-found faile
   db.close();
 });
 
-test("cli wires every pipeline and canonical maintenance subcommand", () => {
+test("cli wires every pipeline subcommand", () => {
   expect(Object.keys(COMMANDS).sort()).toEqual([
-    "audit-canonical",
     "backfill",
-    "migrate-canonical",
     "parse",
     "poll",
     "rebuild",
