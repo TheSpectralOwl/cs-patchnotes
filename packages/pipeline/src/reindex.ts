@@ -115,6 +115,12 @@ interface TagProjectionRow {
 
 /** Build the complete deterministic ranking projection from canonical SQLite rows. */
 export function buildFragmentDocs(db: Database): MeiliFragmentDocument[] {
+  // Gate the projection to the document's CURRENT source head with a selected +
+  // complete parse state. Fragments retained from a superseded body — or from a
+  // head that is now quarantined, unparsed, or failed — stay in SQLite as private
+  // history but must never reach the public index. Requiring
+  // state.source_record_id = head.source_record_id excludes a complete parse whose
+  // output belongs to a source record the head has already moved past.
   const fragments = db
     .prepare(
       `SELECT
@@ -134,6 +140,14 @@ export function buildFragmentDocs(db: Database): MeiliFragmentDocument[] {
        JOIN blocks b
          ON b.id = sf.block_id
         AND b.document_id = sf.document_id
+       JOIN document_source_heads head
+         ON head.document_id = sf.document_id
+       JOIN document_parse_state state
+         ON state.document_id = head.document_id
+        AND state.source_adapter = head.source_adapter
+        AND state.source_record_id = head.source_record_id
+       WHERE state.selection_state = 'selected'
+         AND state.materialization_status = 'complete'
        ORDER BY sf.document_id, sf.fragment_order, sf.id`,
     )
     .all() as FragmentProjectionRow[];
@@ -193,13 +207,20 @@ export function buildFragmentDocs(db: Database): MeiliFragmentDocument[] {
 }
 
 /**
- * Project SQLite into the index: build one document per fragment and load them in
- * batches with `primaryKey: "id"` so re-loading upserts (never duplicates).
- * Each batch's enqueued task is awaited.
+ * Project SQLite into the index so the index EXACTLY mirrors the current
+ * projection. The index is a disposable cache: clearing it first (awaited before
+ * any load) guarantees ids absent from SQLite — stale generations, or fragments
+ * dropped because their source head is now quarantined/failed — cannot survive an
+ * ordinary reindex. This module stays a pure writer: nothing is read back from
+ * Meili to compute the delta. Documents then load in batches with
+ * `primaryKey: "id"` so re-loading upserts (never duplicates); each enqueued task
+ * is awaited.
  */
 export async function reindexFromSqlite(client: Meilisearch, db: Database): Promise<ReindexResult> {
   const docs = buildFragmentDocs(db);
   const index = client.index<MeiliFragmentDocument>(INDEX_UID);
+
+  assertTaskSucceeded(await index.deleteAllDocuments().waitTask());
 
   for (let i = 0; i < docs.length; i += BATCH_SIZE) {
     const batch = docs.slice(i, i + BATCH_SIZE);

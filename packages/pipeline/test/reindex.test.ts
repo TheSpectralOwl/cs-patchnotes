@@ -502,13 +502,23 @@ test("loads deterministic batches with id as the explicit primary key", async ()
   db.close();
 });
 
-test("accepts an empty canonical projection without issuing a load task", async () => {
+test("clears the index for an empty projection without issuing a load task", async () => {
   const db = openDb(":memory:");
   const { client, state } = makeStubClient();
 
   await expect(reindexFromSqlite(client, db)).resolves.toEqual({ documents: 0 });
   expect(state.batches).toEqual([]);
-  expect(state.order).toEqual([]);
+  // Exact mirror: an empty projection still clears any prior index generation.
+  expect(state.order).toEqual(["clear"]);
+  db.close();
+});
+
+test("aborts a reindex when the clear task fails", async () => {
+  const db = openDb(":memory:");
+  seedCanonicalProjection(db);
+  const { client } = makeStubClient("clear");
+
+  await expect(reindexFromSqlite(client, db)).rejects.toThrow(/clear rejected/);
   db.close();
 });
 
