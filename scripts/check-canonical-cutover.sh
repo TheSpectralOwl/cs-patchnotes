@@ -140,6 +140,7 @@ fi
 
 SERVICES_STARTED=0
 CUTOVER_SUCCEEDED=0
+API_COMPANION_DIRECTORY=""
 
 print_restore_evidence() {
   if [[ ! -f "$CUTOVER_BACKUP_MANIFEST_FILE" ]]; then
@@ -189,8 +190,14 @@ finish() {
   fi
   if (( status != 0 || CUTOVER_SUCCEEDED == 0 )); then
     printf 'cutover failed (status=%s); target, explicit manifest, backup, and log were preserved\n' "$status"
+    if [[ -n "$API_COMPANION_DIRECTORY" && -d "$API_COMPANION_DIRECTORY" ]]; then
+      printf 'SQLite companion evidence preserved at %s\n' "$API_COMPANION_DIRECTORY"
+    fi
     print_restore_evidence || printf 'restore evidence validation failed; do not restore from unvalidated data\n'
   else
+    if [[ -n "$API_COMPANION_DIRECTORY" && -d "$API_COMPANION_DIRECTORY" ]]; then
+      rm -rf -- "$API_COMPANION_DIRECTORY"
+    fi
     printf 'cutover completed; transient services stopped and evidence preserved\n'
   fi
   trap - EXIT
@@ -444,11 +451,20 @@ else
 fi
 
 API_LIVE_LOG="${CUTOVER_LOG_FILE}.api-live"
+API_COMPANION_DIRECTORY="$(mktemp -d "${MANIFEST_DIRECTORY}/.api-sqlite-companions.XXXXXX")"
+chmod 700 "$API_COMPANION_DIRECTORY"
+TARGET_HASH_BEFORE_API="$(node - "$SQLITE_PATH" <<'NODE'
+const { createHash } = require("node:crypto");
+const { readFileSync } = require("node:fs");
+process.stdout.write(createHash("sha256").update(readFileSync(process.argv[2])).digest("hex"));
+NODE
+)"
 printf 'live integration command: RUN_LIVE_CANONICAL=1 npm run test:integration -w packages/api\n'
 set +e
 docker run --rm \
   --network cs-patchnotes_internal \
-  --mount "type=bind,src=$TARGET_DIRECTORY,dst=$TARGET_DIRECTORY,readonly" \
+  --mount "type=bind,src=$API_COMPANION_DIRECTORY,dst=$TARGET_DIRECTORY" \
+  --mount "type=bind,src=$SQLITE_PATH,dst=$SQLITE_PATH,readonly" \
   -e "SQLITE_PATH=$SQLITE_PATH" \
   -e "MEILI_HOST=http://meili:7700" \
   -e MEILI_MASTER_KEY \
@@ -470,6 +486,17 @@ if ! grep -Fq 'LIVE_CANONICAL_ENV=1' "$API_LIVE_LOG" || \
   printf 'ERROR: positive live assertion evidence is missing\n' >&2
   exit 1
 fi
+TARGET_HASH_AFTER_API="$(node - "$SQLITE_PATH" <<'NODE'
+const { createHash } = require("node:crypto");
+const { readFileSync } = require("node:fs");
+process.stdout.write(createHash("sha256").update(readFileSync(process.argv[2])).digest("hex"));
+NODE
+)"
+if [[ "$TARGET_HASH_AFTER_API" != "$TARGET_HASH_BEFORE_API" ]]; then
+  printf 'ERROR: authoritative SQLite content changed during API acceptance\n' >&2
+  exit 1
+fi
+printf 'api_sqlite_content_unchanged sha256=%s\n' "$TARGET_HASH_AFTER_API"
 
 verify_backup post
 node scripts/check-canonical-stale-references.mjs --strict
