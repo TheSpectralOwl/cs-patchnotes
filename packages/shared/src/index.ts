@@ -22,4 +22,5 @@ export type EnvVarName =
 
 export * from "./types.js";
 export * from "./db/ids.js";
+export * from "./db/repositories/documents.js";
 export { openDb } from "./db/client.js";
