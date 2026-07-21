@@ -50,6 +50,58 @@ describe("fetchSearch", () => {
     expect(calledUrl).toContain("/search?q=Dust%20II&limit=20");
   });
 
+  it("maps canonical hydrated hits into display rows", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          hits: [
+            {
+              kind: "direct",
+              document_id: "doc-1",
+              fragment_id: "fragment-1",
+              block_id: "block-1",
+              representative_text: "Reduced AWP magazine size.",
+              context: {
+                document: {
+                  id: "doc-1",
+                  title: "Counter-Strike 2 Update",
+                  posted_at: 1_769_036_288,
+                  game: "cs2",
+                },
+              },
+            },
+          ],
+          truncation: {
+            truncated: false,
+            request_count: 1,
+            hydrated_count: 1,
+            dropped_count: 0,
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchSearch("AWP", 20)).resolves.toEqual({
+      hits: [
+        {
+          id: "direct:doc-1:fragment-1",
+          text: "Reduced AWP magazine size.",
+          title: "Counter-Strike 2 Update",
+          posted_at: 1_769_036_288,
+          game: "cs2",
+        },
+      ],
+      truncation: {
+        truncated: false,
+        request_count: 1,
+        hydrated_count: 1,
+        dropped_count: 0,
+      },
+    });
+  });
+
   it("throws when the API responds with a non-ok status", async () => {
     const fetchMock = vi
       .fn()

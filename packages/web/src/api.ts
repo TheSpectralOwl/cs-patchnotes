@@ -6,20 +6,44 @@
 /** One search hit / recent-updates line as returned by the API. */
 export interface SearchHit {
   id: string;
-  update_id: string;
   text: string;
   title: string;
   posted_at: number;
   game: "cs2" | "csgo";
-  url: string;
-  section: string;
 }
 
-/** The `/search` response shape (Meilisearch-style `hits` envelope). */
+export interface SearchTruncation {
+  truncated: boolean;
+  request_count: number;
+  hydrated_count: number;
+  dropped_count: number;
+}
+
+/** Display-ready search response consumed by the SPA. */
 export interface SearchResponse {
   hits: SearchHit[];
-  estimatedTotalHits?: number;
-  query?: string;
+  truncation?: SearchTruncation;
+}
+
+interface CanonicalSearchHit {
+  kind: "direct" | "subgroup" | "document";
+  document_id: string;
+  fragment_id: string | null;
+  block_id: string | null;
+  group_anchor_block_id?: string | null;
+  representative_text: string;
+  context: {
+    document: {
+      title: string;
+      posted_at: number;
+      game: "cs2" | "csgo";
+    };
+  };
+}
+
+interface CanonicalSearchResponse {
+  hits: CanonicalSearchHit[];
+  truncation?: SearchTruncation;
 }
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
@@ -36,5 +60,14 @@ export async function fetchSearch(q: string, limit = 20): Promise<SearchResponse
   if (!res.ok) {
     throw new Error(`Search request failed: ${res.status}`);
   }
-  return (await res.json()) as SearchResponse;
+  const response = (await res.json()) as CanonicalSearchResponse;
+  const hits = response.hits.map((hit) => ({
+    id: `${hit.kind}:${hit.document_id}:${hit.fragment_id ?? hit.group_anchor_block_id ?? hit.block_id ?? hit.document_id}`,
+    text: hit.representative_text,
+    title: hit.context.document.title,
+    posted_at: hit.context.document.posted_at,
+    game: hit.context.document.game,
+  }));
+
+  return response.truncation ? { hits, truncation: response.truncation } : { hits };
 }
