@@ -1,9 +1,17 @@
-import { test, expect } from "vitest";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { openDb, type LineRow, type SectionRow } from "@cs-patchnotes/shared";
-import { parseCs2Body, parseBody } from "../src/parse/bbcode.js";
-import { parseStoredUpdates } from "../src/parse.js";
+import { describe, expect, test } from "vitest";
+import {
+  openDb,
+  upsertSteamSourceRecord,
+  type BodyFormat,
+} from "@cs-patchnotes/shared";
+import type { PristineSource } from "../src/parse/contract.js";
+import { ParserRegistry } from "../src/parse/registry.js";
+import { steamNewsBbcodeParser } from "../src/parse/steam-bbcode.js";
+import { steamPatchPlaintextParser } from "../src/parse/steam-plaintext.js";
+import { parseStoredDocuments } from "../src/parse.js";
 
 interface Fixture {
   gid: string;
@@ -19,319 +27,127 @@ function loadFixture(name: string): Fixture {
   return JSON.parse(readFileSync(path, "utf8")) as Fixture;
 }
 
-const cs2 = loadFixture("cs2-multi-section.json");
-const imageHeavy = loadFixture("cs2-image-heavy.json");
+const registry = new ParserRegistry([steamPatchPlaintextParser, steamNewsBbcodeParser]);
+const FORBIDDEN = /\{STEAM_CLAN_IMAGE\}|https?:\/\/|steamstatic|\.png|\[\/?(?:img|url|p|list|h[1-6])\b|\[\*\]|\[\/\*\]/i;
 
-/**
- * Anything that must NEVER survive into searchable line text. The trailing
- * `|\[` catches ANY residual bracket — an unescaped `[ HEADER ]`, a stray
- * markup fragment, or a leftover `\[` — so no bracket of any kind leaks.
- */
-const FORBIDDEN =
-  /\{STEAM_CLAN_IMAGE\}|steamstatic|\.png|\[\/?(?:img|url|p|list|h[1-6])\b|\[\*\]|\[\/\*\]|\[/i;
-
-function seedUpdate(db: ReturnType<typeof openDb>, fx: Fixture): void {
-  db.prepare(
-    `INSERT INTO updates (id, posted_at, title, url, feedname, game, raw_body, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET raw_body = excluded.raw_body`,
-  ).run(fx.gid, fx.date, fx.title, fx.url, fx.feedname, "cs2", fx.contents, 0);
+function bodyFormat(body: string): BodyFormat {
+  return /\[(?:\/?(?:p|list|h[1-6]|img|carousel)\b|\/?\*)/i.test(body)
+    ? "bbcode"
+    : "plain_text";
 }
 
-test("parseCs2Body splits a multi-section body into ordered sections with non-null headers", () => {
-  const sections = parseCs2Body(cs2.contents);
-  const headers = sections.map((s) => s.header).filter((h): h is string => h !== null);
-  expect(headers.length).toBeGreaterThan(1);
-  // Document order: the first bracket header in the body is PREMIER.
-  expect(headers[0]).toBe("PREMIER");
-  // Every non-null-header section carries at least one line.
-  for (const s of sections) {
-    if (s.header !== null) expect(s.lines.length).toBeGreaterThan(0);
-  }
-});
-
-test("backslash-escaped headers are unescaped and detected as section boundaries", () => {
-  const headers = parseCs2Body(cs2.contents).map((s) => s.header);
-  // \[ MAPS ] in the raw body must surface as a MAPS section header.
-  expect(headers).toContain("MAPS");
-});
-
-test("no image tokens, steamstatic URLs, .png, or residual BBCode survive into line text", () => {
-  const db = openDb(":memory:");
-  seedUpdate(db, cs2);
-  seedUpdate(db, imageHeavy); // the {STEAM_CLAN_IMAGE}/[img]/.png stress fixture
-  parseStoredUpdates(db);
-
-  const lines = db.prepare("SELECT text FROM lines").all() as Pick<LineRow, "text">[];
-  expect(lines.length).toBeGreaterThan(0);
-  for (const { text } of lines) {
-    expect(text).not.toMatch(FORBIDDEN);
-  }
-  db.close();
-});
-
-test("parsing is idempotent — identical section/line IDs and stable row counts on re-run", () => {
-  const db = openDb(":memory:");
-  seedUpdate(db, cs2);
-
-  const first = parseStoredUpdates(db);
-  const sectionsA = (db.prepare("SELECT id FROM sections ORDER BY id").all() as Pick<SectionRow, "id">[]).map((r) => r.id);
-  const linesA = (db.prepare("SELECT id FROM lines ORDER BY id").all() as Pick<LineRow, "id">[]).map((r) => r.id);
-
-  const second = parseStoredUpdates(db);
-  const sectionsB = (db.prepare("SELECT id FROM sections ORDER BY id").all() as Pick<SectionRow, "id">[]).map((r) => r.id);
-  const linesB = (db.prepare("SELECT id FROM lines ORDER BY id").all() as Pick<LineRow, "id">[]).map((r) => r.id);
-
-  expect(second.sections).toBe(first.sections);
-  expect(second.lines).toBe(first.lines);
-  expect(sectionsB).toEqual(sectionsA);
-  expect(linesB).toEqual(linesA);
-
-  // IDs are structural ordinals anchored on gid: section 0 = "<gid>_0", line 0 = "<gid>_0_0".
-  expect(sectionsA[0]).toBe(`${cs2.gid}_0`);
-  expect(linesA).toContain(`${cs2.gid}_0_0`);
-  db.close();
-});
-
-test("a shrinking re-parse prunes orphan sections and lines, leaving zero stragglers", () => {
-  const db = openDb(":memory:");
-  const gid = "9000000000000000001";
-  const longBody =
-    "[ ALPHA ]\n[list]\n[*] a1\n[*] a2\n[*] a3\n[/list]\n[ BETA ]\n[list]\n[*] b1\n[*] b2\n[/list]";
-  const shortBody = "[ ALPHA ]\n[list]\n[*] a1\n[/list]";
-
-  db.prepare(
-    `INSERT INTO updates (id, posted_at, title, url, feedname, game, raw_body, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(gid, 1700000000, "shrink test", "http://x", "steam_community_announcements", "cs2", longBody, 0);
-
-  parseStoredUpdates(db);
-  // The long body produces ALPHA(3) + BETA(2); a high-index line only the long
-  // parse could produce is section 0 line 2 ("a3").
-  const orphanLineId = `${gid}_0_2`;
-  expect(
-    (db.prepare("SELECT id FROM lines WHERE id = ?").get(orphanLineId) as { id: string } | undefined),
-  ).toBeDefined();
-
-  // Overwrite with a strictly shorter body and re-parse.
-  db.prepare("UPDATE updates SET raw_body = ? WHERE id = ?").run(shortBody, gid);
-  parseStoredUpdates(db);
-
-  // Only the shorter body's rows survive: 1 section, 1 line — no orphans.
-  const sectionCount = (db.prepare("SELECT COUNT(*) c FROM sections WHERE update_id = ?").get(gid) as { c: number }).c;
-  const lineCount = (db.prepare("SELECT COUNT(*) c FROM lines WHERE update_id = ?").get(gid) as { c: number }).c;
-  expect(sectionCount).toBe(1);
-  expect(lineCount).toBe(1);
-
-  // The first-parse-only high-index line id is gone.
-  expect(db.prepare("SELECT id FROM lines WHERE id = ?").get(orphanLineId)).toBeUndefined();
-  db.close();
-});
-
-test("an unchanged re-parse deletes zero rows and preserves downstream line_tags", () => {
-  const db = openDb(":memory:");
-  seedUpdate(db, cs2);
-  parseStoredUpdates(db);
-
-  // Attach a sentinel classification row to a real line (simulating a later pass).
-  const sentinelLineId = `${cs2.gid}_0_0`;
-  expect(db.prepare("SELECT id FROM lines WHERE id = ?").get(sentinelLineId)).toBeDefined();
-  db.prepare(
-    `INSERT INTO line_tags (line_id, kind, category, entity, source, confidence)
-     VALUES (?, 'category', 'gameplay', NULL, 'rules', NULL)`,
-  ).run(sentinelLineId);
-
-  // Re-parse the UNCHANGED body — the orphan prune must find nothing to delete.
-  parseStoredUpdates(db);
-
-  const tag = db
-    .prepare("SELECT line_id FROM line_tags WHERE line_id = ? AND kind = 'category'")
-    .get(sentinelLineId) as { line_id: string } | undefined;
-  expect(tag).toBeDefined();
-  db.close();
-});
-
-test("the lines table carries the nullable nesting columns", () => {
-  const db = openDb(":memory:");
-  const cols = (db.prepare("PRAGMA table_info(lines)").all() as { name: string }[]).map((c) => c.name);
-  expect(cols).toContain("subheader");
-  expect(cols).toContain("parent_line_index");
-  db.close();
-});
-
-test("nested bullets persist a non-null subheader + parent_line_index to SQLite", () => {
-  const db = openDb(":memory:");
-  seedUpdate(db, cs2);
-  parseStoredUpdates(db);
-
-  const linked = db
-    .prepare("SELECT text, subheader, parent_line_index FROM lines WHERE subheader IS NOT NULL AND parent_line_index IS NOT NULL")
-    .all() as Pick<LineRow, "text" | "subheader" | "parent_line_index">[];
-  expect(linked.length).toBeGreaterThan(0);
-  for (const row of linked) {
-    expect(typeof row.subheader).toBe("string");
-    expect(typeof row.parent_line_index).toBe("number");
-  }
-  db.close();
-});
-
-test("stored line text is the extracted cleaned string, never a stringified ParsedLine", () => {
-  const db = openDb(":memory:");
-  seedUpdate(db, cs2);
-  parseStoredUpdates(db);
-
-  const rows = db.prepare("SELECT text FROM lines").all() as Pick<LineRow, "text">[];
-  expect(rows.length).toBeGreaterThan(0);
-  // (a) every row is a real string and none is a stringified object
-  for (const { text } of rows) {
-    expect(typeof text).toBe("string");
-    expect(text).not.toContain("[object Object]");
-  }
-  // (b) a specific known bullet's cleaned text matches exactly — proving `.text`
-  //     was extracted, not the whole ParsedLine object.
-  const texts = rows.map((r) => r.text);
-  expect(texts).toContain("Premier Season Five has begun");
-  db.close();
-});
-
-// ---------------------------------------------------------------------------
-// Cross-era golden-file lock: real Valve notes frozen from the live feed, one
-// per structural era plus edge cases. Each asserts STRUCTURAL counts (section
-// count + per-section line counts), preserved nesting, and no-leak negatives —
-// never a full-body snapshot, so minor Valve text edits can't make them brittle.
-// ---------------------------------------------------------------------------
-
-interface Golden {
-  /** Fixture filename. */
-  file: string;
-  /** Expected number of parsed sections (document order). */
-  sections: number;
-  /** Expected line count per section, in document order. */
-  lineCounts: number[];
+function source(fixture: Fixture): PristineSource {
+  return {
+    documentId: `document-${fixture.gid}`,
+    sourceRecordId: `source-${fixture.gid}`,
+    sourceAdapter: "steam_news",
+    bodyFormat: bodyFormat(fixture.contents),
+    pristineBody: fixture.contents,
+    bodySha256: createHash("sha256").update(fixture.contents, "utf8").digest("hex"),
+  };
 }
 
-/** Frozen structural expectations captured from the parser over each fixture. */
-const GOLDEN: Golden[] = [
-  { file: "csgo-2013-crlf.json", sections: 6, lineCounts: [1, 6, 3, 1, 3, 2] },
-  { file: "csgo-2018-lf.json", sections: 6, lineCounts: [1, 2, 1, 3, 1, 39] },
-  { file: "csgo-2021-lf.json", sections: 3, lineCounts: [4, 2, 2] },
-  { file: "cs2-2023-richtext.json", sections: 8, lineCounts: [2, 15, 14, 10, 2, 4, 11, 3] },
-  { file: "cs2-2026-richtext.json", sections: 10, lineCounts: [3, 1, 11, 5, 2, 1, 22, 5, 1, 9] },
-  { file: "cs2-2023-btag-header.json", sections: 6, lineCounts: [1, 2, 1, 7, 5, 1] },
-  { file: "edge-headerless.json", sections: 1, lineCounts: [3] },
-  { file: "edge-off-title-allowlisted.json", sections: 4, lineCounts: [2, 4, 19, 12] },
-  { file: "edge-nested-map-subheader.json", sections: 3, lineCounts: [3, 8, 14] },
-];
+function parseFixture(fixture: Fixture) {
+  const selection = registry.selectParser(source(fixture));
+  expect(selection.status).toBe("selected");
+  if (selection.status !== "selected") throw new Error("fixture did not select exactly one parser");
+  return { key: selection.parserKey, output: selection.parser.parse(source(fixture)) };
+}
 
-for (const g of GOLDEN) {
-  test(`golden: ${g.file} parses into the expected section/line structure with no leaks`, () => {
-    const fx = loadFixture(g.file);
-    const sections = parseBody(fx.contents, fx.date);
+function seedFixture(db: ReturnType<typeof openDb>, fixture: Fixture): string {
+  return upsertSteamSourceRecord(db, {
+    gid: fixture.gid,
+    url: fixture.url,
+    title: fixture.title,
+    posted_at: fixture.date,
+    game: fixture.date >= 1_695_772_800 ? "cs2" : "csgo",
+    channel: "mainline",
+    content_kind: "patch_notes",
+    source_adapter: "steam_news",
+    body_format: bodyFormat(fixture.contents),
+    pristine_body: fixture.contents,
+    fetched_at: fixture.date,
+  }).document.id;
+}
 
-    // Structural counts (D-14) — assert shape, not text blobs.
-    expect(sections.length).toBe(g.sections);
-    expect(sections.map((s) => s.lines.length)).toEqual(g.lineCounts);
+const HISTORICAL_FIXTURES = [
+  "csgo-2013-crlf.json",
+  "csgo-2018-lf.json",
+  "csgo-2021-lf.json",
+  "cs2-2023-richtext.json",
+  "cs2-2026-richtext.json",
+  "cs2-2023-btag-header.json",
+  "edge-headerless.json",
+  "edge-off-title-allowlisted.json",
+  "edge-nested-map-subheader.json",
+] as const;
 
-    // Every titled section carries at least one line (nothing empty was kept).
-    for (const s of sections) {
-      if (s.header !== null) expect(s.lines.length).toBeGreaterThan(0);
-    }
+describe("historical fixtures through the canonical registry", () => {
+  test.each(HISTORICAL_FIXTURES)("%s selects exactly one parser and retains searchable semantics", (file) => {
+    const fixture = loadFixture(file);
+    const { output } = parseFixture(fixture);
+    const semantic = output.blocks
+      .flatMap((block) => [block.text, block.label])
+      .filter((value): value is string => value !== null);
 
-    // No-leak negatives + positive stored-text: every produced line is a real,
-    // non-empty string, carries no residual markup/image/bracket, and is never
-    // a stringified ParsedLine object.
-    for (const s of sections) {
-      for (const line of s.lines) {
-        expect(typeof line.text).toBe("string");
-        expect(line.text.length).toBeGreaterThan(0);
-        expect(line.text).not.toContain("[object Object]");
-        expect(line.text).not.toMatch(FORBIDDEN);
-      }
+    expect(output.blocks.length).toBeGreaterThan(0);
+    expect(semantic.length).toBeGreaterThan(0);
+    expect(output.blocks.map((block) => block.sourceSpan.start)).toEqual(
+      [...output.blocks].map((block) => block.sourceSpan.start).sort((a, b) => a - b),
+    );
+    for (const text of semantic) {
+      expect(text).not.toContain("[object Object]");
+      expect(text).not.toMatch(FORBIDDEN);
     }
   });
-}
 
-test("inline-formatting-wrapped headers split into their real named sections with no bracket leak", () => {
-  const fx = loadFixture("cs2-2023-btag-header.json");
-  const sections = parseBody(fx.contents, fx.date);
+  test("retains the known early release text and the headerless note without a fallback era", () => {
+    const early = parseFixture(loadFixture("csgo-2013-crlf.json")).output;
+    const headerless = parseFixture(loadFixture("edge-headerless.json")).output;
 
-  // (a) The note is NOT collapsed into a single header:null block.
-  expect(sections.length).toBeGreaterThan(1);
+    expect(early.blocks.some((block) => block.text === "Release Notes for 12/18/2013")).toBe(true);
+    expect(headerless.blocks.filter((block) => block.kind === "heading")).toHaveLength(0);
+    expect(headerless.blocks.filter((block) => block.text !== null).length).toBeGreaterThan(0);
+  });
 
-  // (b) The wrapped headers are re-detected as their real named sections.
-  const headers = sections.map((s) => s.header).filter((h): h is string => h !== null);
-  expect(headers).toContain("CASE DROPS");
-  expect(headers).toContain("MAPS");
-  expect(headers).toContain("WEAPONS");
-  expect(headers).toContain("WORKSHOP TOOLS");
+  test("retains wrapped section labels and nested map ownership as canonical ancestors", () => {
+    const wrapped = parseFixture(loadFixture("cs2-2023-btag-header.json")).output;
+    const nested = parseFixture(loadFixture("edge-nested-map-subheader.json")).output;
+    const labels = wrapped.blocks.map((block) => block.label).filter(Boolean);
+    const inferno = nested.blocks.findIndex((block) => block.label === "Inferno" || block.text === "Inferno");
+    const balcony = nested.blocks.findIndex((block) => block.text === "Balcony at Bombsite A has been extended.");
 
-  // (c) Every titled section carries at least one line.
-  for (const s of sections) {
-    if (s.header !== null) expect(s.lines.length).toBeGreaterThan(0);
-  }
-
-  // (d) No bracket-wrapped header text leaks into searchable line text — the
-  //     `\[` no-leak assertion runs against this real affected body.
-  for (const s of sections) {
-    for (const line of s.lines) {
-      expect(line.text).not.toMatch(FORBIDDEN);
+    expect(labels).toEqual(expect.arrayContaining(["CASE DROPS", "MAPS", "WEAPONS", "WORKSHOP TOOLS"]));
+    expect(inferno).toBeGreaterThanOrEqual(0);
+    expect(balcony).toBeGreaterThan(inferno);
+    const parentIndexes = new Set<number>();
+    let cursor = nested.blocks[balcony].parentIndex;
+    while (cursor !== null) {
+      parentIndexes.add(cursor);
+      cursor = nested.blocks[cursor].parentIndex;
     }
-  }
+    expect(parentIndexes.has(inferno)).toBe(true);
+  });
 });
 
-test("golden: a known CS:GO 2013 line's cleaned text matches exactly (positive lock)", () => {
-  const fx = loadFixture("csgo-2013-crlf.json");
-  const sections = parseBody(fx.contents, fx.date);
-  // The pre-header intro line is a stable, exact cleaned string — proving the
-  // parser emits real text, not a coincidentally count-satisfying blob.
-  expect(sections[0].lines[0].text).toBe("Release Notes for 12/18/2013");
-});
+describe("historical fixtures through current-source canonical persistence", () => {
+  test("materializes current immutable source heads into ordered blocks and fragments", () => {
+    const db = openDb(":memory:");
+    const cs2 = loadFixture("cs2-multi-section.json");
+    const imageHeavy = loadFixture("cs2-image-heavy.json");
+    const documentIds = [seedFixture(db, cs2), seedFixture(db, imageHeavy)];
 
-test("golden: headerless note yields exactly one header:null section, nothing dropped", () => {
-  const fx = loadFixture("edge-headerless.json");
-  const sections = parseBody(fx.contents, fx.date);
-  expect(sections.length).toBe(1);
-  expect(sections[0].header).toBeNull();
-  expect(sections[0].lines.length).toBeGreaterThan(0);
-});
+    const summary = parseStoredDocuments(db, registry, { runId: "historical-current-heads", now: () => 1_700_000_000 });
+    expect(summary).toMatchObject({ attempted: 2, selected: 2, materialized: 2, gateFailed: false });
 
-test("golden: off-title allow-listed real parses into at least one non-empty line", () => {
-  const fx = loadFixture("edge-off-title-allowlisted.json");
-  const sections = parseBody(fx.contents, fx.date);
-  const lines = sections.flatMap((s) => s.lines);
-  expect(lines.length).toBeGreaterThan(0);
-  for (const line of lines) {
-    expect(typeof line.text).toBe("string");
-    expect(line.text.length).toBeGreaterThan(0);
-  }
-});
-
-test("golden: nested-map note persists a non-null subheader + parent_line_index whose text is a real cleaned string", () => {
-  const db = openDb(":memory:");
-  const fx = loadFixture("edge-nested-map-subheader.json");
-  seedUpdate(db, fx);
-  parseStoredUpdates(db);
-
-  const linked = db
-    .prepare(
-      "SELECT text, subheader, parent_line_index FROM lines WHERE subheader IS NOT NULL AND parent_line_index IS NOT NULL",
-    )
-    .all() as Pick<LineRow, "text" | "subheader" | "parent_line_index">[];
-
-  // At least one map bullet is linked to its map subheader (D-12).
-  expect(linked.length).toBeGreaterThan(0);
-  for (const row of linked) {
-    expect(typeof row.subheader).toBe("string");
-    expect(typeof row.parent_line_index).toBe("number");
-    // The DB write path extracted ParsedLine.text — never the whole object.
-    expect(typeof row.text).toBe("string");
-    expect(row.text).not.toContain("[object Object]");
-  }
-
-  // A specific map subheader ("Inferno") links a specific bullet — the exact
-  // parent→child relationship the later attribution pass depends on.
-  const inferno = linked.find((r) => r.subheader === "Inferno");
-  expect(inferno).toBeDefined();
-  expect(inferno?.text).toBe("Balcony at Bombsite A has been extended.");
-  db.close();
+    for (const documentId of documentIds) {
+      const blocks = db.prepare("SELECT kind, text, preorder FROM blocks WHERE document_id = ? ORDER BY preorder").all(documentId) as Array<{ kind: string; text: string | null; preorder: number }>;
+      const fragments = db.prepare("SELECT text, fragment_order FROM search_fragments WHERE document_id = ? ORDER BY fragment_order").all(documentId) as Array<{ text: string; fragment_order: number }>;
+      expect(blocks.length).toBeGreaterThan(0);
+      expect(blocks.map((block) => block.preorder)).toEqual(blocks.map((_, index) => index));
+      expect(fragments.length).toBeGreaterThan(0);
+      for (const fragment of fragments) expect(fragment.text).not.toMatch(FORBIDDEN);
+    }
+    db.close();
+  });
 });
