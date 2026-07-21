@@ -109,6 +109,12 @@ test("GET /search?q=grenade hydrates ranked identifiers from SQLite", async () =
       showMatchesPosition: true,
     }),
   );
+  expect(searchMock).toHaveBeenCalledTimes(4);
+  expect(searchMock.mock.calls.slice(1).map((call) => call[1]?.attributesToSearchOn)).toEqual([
+    ["text"],
+    ["title"],
+    ["ancestor_labels"],
+  ]);
   const serialized = JSON.stringify(body);
   expect(serialized).not.toContain("STALE MEILI TEXT");
   expect(serialized).not.toContain("STALE MEILI TITLE");
@@ -117,6 +123,45 @@ test("GET /search?q=grenade hydrates ranked identifiers from SQLite", async () =
   expect(serialized).not.toContain("source_locator");
   expect(serialized).not.toContain("diagnostic");
   expect(serialized).not.toContain("MEILI_MASTER_KEY");
+  await app.close();
+});
+
+test("title-restricted evidence produces one earliest-rank SQLite document representative", async () => {
+  const titleHit = {
+    id: "frag-a",
+    fragment_id: "frag-a",
+    block_id: "block-a",
+    document_id: "doc-a",
+    primary_release_id: null,
+    group_anchor_block_id: null,
+    fragment_kind: "block_text",
+    content_kind: "patch_notes",
+    posted_at: 200,
+  };
+  searchMock
+    .mockResolvedValueOnce({ hits: [titleHit, { ...titleHit }], query: "SQLite Alpha" })
+    .mockResolvedValueOnce({ hits: [], query: "SQLite Alpha" })
+    .mockResolvedValueOnce({ hits: [titleHit, { ...titleHit }], query: "SQLite Alpha" })
+    .mockResolvedValueOnce({ hits: [], query: "SQLite Alpha" });
+
+  const app = buildServer();
+  const res = await app.inject({
+    method: "GET",
+    url: "/search?q=SQLite%20Alpha&limit=20",
+  });
+  expect(res.statusCode).toBe(200);
+  expect(res.json().hits).toHaveLength(1);
+  expect(res.json().hits[0]).toMatchObject({
+    kind: "document",
+    rank: 0,
+    document_id: "doc-a",
+    representative_text: "SQLite Alpha",
+  });
+  expect(searchMock.mock.calls.slice(1).map((call) => call[1])).toEqual([
+    expect.objectContaining({ attributesToSearchOn: ["text"] }),
+    expect.objectContaining({ attributesToSearchOn: ["title"] }),
+    expect.objectContaining({ attributesToSearchOn: ["ancestor_labels"] }),
+  ]);
   await app.close();
 });
 
