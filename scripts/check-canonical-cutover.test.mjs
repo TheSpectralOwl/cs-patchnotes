@@ -181,6 +181,9 @@ if (argv[0] === "compose" && has("run") && argv.includes("poller")) {
     process.exit(0);
   }
   if (argv.includes("rebuild")) {
+    if (process.env.HARNESS_MODE === "fail-rebuild") {
+      console.error("rebuild shim failure"); process.exit(9);
+    }
     console.log("rebuild: dropped + repopulated canonical_fragments");
     process.exit(0);
   }
@@ -381,6 +384,40 @@ test("resumes only with explicit authorization and revalidates immutable expansi
   assert.match(log, /resume mode: exact existing manifest and backup selected/);
 });
 
+test("resumes canonical version 2 through evidence validation without destructive stages", (t) => {
+  const harness = makeHarness(t, "fail-rebuild");
+  const failed = runHarness(harness);
+  assert.notEqual(failed.status, 0);
+  const manifestBytes = readFileSync(harness.manifest);
+  const backupPath = `${harness.manifest}.sqlite-backup`;
+  const backupHash = sha256(backupPath);
+  const recordCount = records(harness).length;
+  const live = new Database(harness.target, { readonly: true, fileMustExist: true });
+  assert.equal(live.pragma("user_version", { simple: true }), 2);
+  live.close();
+
+  const resumed = runHarness(harness, {
+    HARNESS_MODE: "success",
+    CUTOVER_RESUME: "1",
+    CUTOVER_RESUME_STAGE: "canonical-v2",
+  });
+  assert.equal(resumed.status, 0, `${resumed.stdout}\n${resumed.stderr}`);
+  assert.deepEqual(readFileSync(harness.manifest), manifestBytes);
+  assert.equal(sha256(backupPath), backupHash);
+  const resumedRecords = records(harness).slice(recordCount);
+  assert.deepEqual(resumedRecords.map(pollerStage).filter(Boolean), ["post-audit", "rebuild"]);
+  assert.equal(
+    resumedRecords.some((record) =>
+      record.argv.includes("parse") ||
+      record.argv.includes("finalize") ||
+      record.argv.includes("--record-finalization-readiness"),
+    ),
+    false,
+  );
+  const log = readFileSync(`${harness.manifest}.cutover.log`, "utf8");
+  assert.match(log, /resume stage: canonical-v2 evidence validation before disposable rebuild/);
+});
+
 test("rejects malformed target artifacts and relative manifests before any command", (t) => {
   const cases = [
     { name: "missing", json: {} },
@@ -442,6 +479,6 @@ test("runner source has no approved-database basename or sibling-discovery short
   assert.doesNotMatch(source, /patchnotes\.db/);
   assert.doesNotMatch(source, /\bbasename\b/);
   assert.doesNotMatch(source, /\b(?:find|ls)\b[^\n]*(?:manifest|backup)/i);
-  assert.doesNotMatch(source, /mtime|newest/i);
+  assert.doesNotMatch(source, /newest|mtime[^\n]*(?:sort|order)/i);
   assert.match(source, /set -euo pipefail/);
 });

@@ -19,6 +19,14 @@ if [[ "${CUTOVER_RESUME:-0}" != "0" && "${CUTOVER_RESUME:-0}" != "1" ]]; then
   printf 'ERROR: CUTOVER_RESUME must be exactly 0 or 1\n' >&2
   exit 2
 fi
+if [[ -n "${CUTOVER_RESUME_STAGE:-}" && "${CUTOVER_RESUME_STAGE}" != "canonical-v2" ]]; then
+  printf 'ERROR: CUTOVER_RESUME_STAGE must be empty or canonical-v2\n' >&2
+  exit 2
+fi
+if [[ -n "${CUTOVER_RESUME_STAGE:-}" && "${CUTOVER_RESUME:-0}" != "1" ]]; then
+  printf 'ERROR: CUTOVER_RESUME_STAGE requires CUTOVER_RESUME=1\n' >&2
+  exit 2
+fi
 
 # Read the one approved value through Node and a NUL delimiter. `read -d` keeps
 # every byte representable in a POSIX path, including spaces and trailing lines.
@@ -125,6 +133,9 @@ exec > >(tee -a "$CUTOVER_LOG_FILE") 2>&1
 printf '\ncutover attempt started\n'
 if [[ "${CUTOVER_RESUME:-0}" == "1" ]]; then
   printf 'resume mode: exact existing manifest and backup selected; canonical retry validation is mandatory\n'
+  if [[ "${CUTOVER_RESUME_STAGE:-}" == "canonical-v2" ]]; then
+    printf 'resume stage: canonical-v2 evidence validation before disposable rebuild\n'
+  fi
 fi
 
 SERVICES_STARTED=0
@@ -295,23 +306,142 @@ verify_backup() {
     ' "$mode" "$CUTOVER_BACKUP_MANIFEST_FILE" "$SQLITE_PATH"
 }
 
-run_poller migrate-canonical --stage expand --apply \
-  --backup-manifest "$CUTOVER_BACKUP_MANIFEST_FILE"
-verify_backup pre
+verify_canonical_v2_resume() {
+  docker compose --profile seed run --rm --no-deps \
+    --entrypoint node \
+    -e "SQLITE_PATH=$SQLITE_PATH" \
+    -v "$TARGET_DIRECTORY:$TARGET_DIRECTORY" \
+    -v "$MANIFEST_DIRECTORY:$MANIFEST_DIRECTORY:ro" \
+    poller -e '
+      const { createHash } = require("node:crypto");
+      const { readFileSync, statSync } = require("node:fs");
+      const Database = require("better-sqlite3");
+      const manifestPath = process.argv[1];
+      const targetPath = process.argv[2];
+      const bytes = readFileSync(manifestPath);
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      const manifest = JSON.parse(bytes);
+      if (manifest.contract_version !== 1) throw new Error("resume manifest contract mismatch");
+      if (manifest.target.path !== targetPath) throw new Error("resume target path mismatch");
+      if (manifest.backup.path !== manifestPath + ".sqlite-backup") throw new Error("resume backup path mismatch");
+      const targetStat = statSync(targetPath);
+      if (targetStat.dev !== manifest.target.device || targetStat.ino !== manifest.target.inode) {
+        throw new Error("resume target file identity mismatch");
+      }
+      const backupStat = statSync(manifest.backup.path);
+      for (const [actual, expected, label] of [
+        [backupStat.dev, manifest.backup.device, "device"],
+        [backupStat.ino, manifest.backup.inode, "inode"],
+        [backupStat.size, manifest.backup.size, "size"],
+        [backupStat.mtimeMs, manifest.backup.mtime_ms, "modified time"],
+      ]) {
+        if (actual !== expected) throw new Error(`resume backup ${label} mismatch`);
+      }
+      const backupHash = createHash("sha256").update(readFileSync(manifest.backup.path)).digest("hex");
+      if (backupHash !== manifest.backup.sha256) throw new Error("resume backup SHA-256 mismatch");
+      const backup = new Database(manifest.backup.path, { readonly: true, fileMustExist: true });
+      const target = new Database(targetPath, { readonly: true, fileMustExist: true });
+      const count = (db, table) => db.prepare(`SELECT count(*) FROM ${table}`).pluck().get();
+      const meta = (key) => target.prepare("SELECT value FROM meta WHERE key = ?").pluck().get(key);
+      try {
+        if (backup.pragma("quick_check", { simple: true }) !== "ok" || backup.pragma("user_version", { simple: true }) !== 0) {
+          throw new Error("resume backup open verification failed");
+        }
+        const expectedLegacy = { updates: 274, sections: 828, lines: 4173, line_tags: 0 };
+        for (const [table, expected] of Object.entries(expectedLegacy)) {
+          if (count(backup, table) !== expected || manifest.target.table_counts[table] !== expected) {
+            throw new Error(`resume backup ${table} evidence mismatch`);
+          }
+        }
+        if (target.pragma("quick_check", { simple: true }) !== "ok" || target.pragma("user_version", { simple: true }) !== 2) {
+          throw new Error("resume target is not healthy canonical version 2");
+        }
+        if (target.pragma("foreign_key_check").length !== 0) throw new Error("resume target foreign keys failed");
+        const prototypeCount = target.prepare(`
+          SELECT count(*) FROM sqlite_master
+           WHERE type = ? AND name IN (?, ?, ?, ?)`)
+          .pluck().get("table", "updates", "sections", "lines", "line_tags");
+        if (prototypeCount !== 0) throw new Error("resume target retains prototype tables");
+        const counts = {
+          documents: count(target, "documents"),
+          gids: target.prepare("SELECT count(*) FROM external_identifiers WHERE namespace = ?").pluck().get("steam_news_gid"),
+          locators: target.prepare("SELECT count(*) FROM source_locators WHERE namespace = ?").pluck().get("steam_news_url"),
+          heads: target.prepare("SELECT count(*) FROM document_source_heads WHERE source_adapter = ?").pluck().get("steam_news"),
+          revisions: target.prepare("SELECT count(*) FROM source_records WHERE source_adapter = ?").pluck().get("steam_news"),
+          unresolved: target.prepare("SELECT count(*) FROM documents WHERE parse_status <> ?").pluck().get("parsed"),
+          incomplete: target.prepare("SELECT count(*) FROM document_parse_state WHERE selection_state <> ? OR materialization_status <> ?").pluck().get("selected", "complete"),
+          bbcode: target.prepare("SELECT count(*) FROM document_parse_state WHERE parser_key = ?").pluck().get("steam-news-bbcode"),
+          plaintext: target.prepare("SELECT count(*) FROM document_parse_state WHERE parser_key = ?").pluck().get("steam-patch-plaintext"),
+        };
+        if (JSON.stringify(counts) !== JSON.stringify({ documents: 274, gids: 274, locators: 274, heads: 274, revisions: 274, unresolved: 0, incomplete: 0, bbcode: 224, plaintext: 50 })) {
+          throw new Error("resume canonical corpus baseline mismatch");
+        }
+        if (meta("canonical_expansion_id") !== manifest.expansion_id ||
+            meta("canonical_backup_manifest_path") !== manifestPath ||
+            meta("canonical_backup_manifest_sha256") !== digest ||
+            meta("canonical_legacy_source_digest") !== manifest.target.legacy_source_digest) {
+          throw new Error("resume expansion metadata mismatch");
+        }
+        const audit = target.prepare("SELECT * FROM canonical_cutover_audits WHERE expansion_id = ? AND manifest_path = ?").get(manifest.expansion_id, manifestPath);
+        if (!audit || audit.manifest_digest !== digest || audit.backup_path !== manifest.backup.path || audit.backup_sha256 !== manifest.backup.sha256) {
+          throw new Error("resume finalization audit mismatch");
+        }
+        const materialized = target.prepare("SELECT * FROM parse_runs WHERE id = ?").get(audit.successful_parse_run_id);
+        const unchanged = target.prepare("SELECT * FROM parse_runs WHERE id = ?").get(audit.noop_parse_run_id);
+        if (!materialized || materialized.status !== "succeeded" || materialized.attempted_count !== 274 || materialized.selected_count !== 274 || materialized.unchanged_count !== 0 || materialized.partial_count !== 0 || materialized.quarantined_count !== 0 || materialized.error_count !== 0) {
+          throw new Error("resume materializing parse evidence mismatch");
+        }
+        if (!unchanged || unchanged.status !== "succeeded" || unchanged.attempted_count !== 274 || unchanged.selected_count !== 274 || unchanged.unchanged_count !== 274 || unchanged.partial_count !== 0 || unchanged.quarantined_count !== 0 || unchanged.error_count !== 0) {
+          throw new Error("resume no-op parse evidence mismatch");
+        }
+        const legacyRows = backup.prepare("SELECT id, raw_body FROM updates ORDER BY id").all();
+        const sourceRows = target.prepare(`
+          SELECT identifier.value AS gid, source.pristine_body, source.body_sha256
+            FROM external_identifiers identifier
+            JOIN document_source_heads head ON head.document_id = identifier.document_id
+            JOIN source_records source ON source.id = head.source_record_id
+           WHERE identifier.namespace = ? AND head.source_adapter = ?
+           ORDER BY identifier.value`).all("steam_news_gid", "steam_news");
+        if (legacyRows.length !== sourceRows.length) throw new Error("resume pristine source count mismatch");
+        for (let index = 0; index < legacyRows.length; index += 1) {
+          const legacy = legacyRows[index];
+          const source = sourceRows[index];
+          const bodyHash = createHash("sha256").update(Buffer.from(legacy.raw_body, "utf8")).digest("hex");
+          if (source.gid !== legacy.id || source.pristine_body !== legacy.raw_body || source.body_sha256 !== bodyHash) {
+            throw new Error("resume pristine source bytes mismatch");
+          }
+        }
+      } finally {
+        target.close();
+        backup.close();
+      }
+      console.log("canonical_v2_resume_verified documents=274 bbcode=224 plaintext=50 unchanged=274 backup_sha256=" + backupHash);
+    ' "$CUTOVER_BACKUP_MANIFEST_FILE" "$SQLITE_PATH"
+}
 
-FIRST_PARSE_LOG="${CUTOVER_LOG_FILE}.parse-first"
-SECOND_PARSE_LOG="${CUTOVER_LOG_FILE}.parse-second"
-run_poller parse | tee "$FIRST_PARSE_LOG"
-grep -Fq 'parse: attempted=274 selected=274 unchanged=0 materialized=274 quarantined=0 partial=0 errors=0' "$FIRST_PARSE_LOG"
-run_poller parse | tee "$SECOND_PARSE_LOG"
-grep -Fq 'parse: attempted=274 selected=274 unchanged=274 materialized=0 quarantined=0 partial=0 errors=0' "$SECOND_PARSE_LOG"
+if [[ "${CUTOVER_RESUME_STAGE:-}" == "canonical-v2" ]]; then
+  verify_canonical_v2_resume
+  run_poller audit-canonical --strict
+  run_poller rebuild
+else
+  run_poller migrate-canonical --stage expand --apply \
+    --backup-manifest "$CUTOVER_BACKUP_MANIFEST_FILE"
+  verify_backup pre
 
-run_poller audit-canonical --strict --record-finalization-readiness \
-  --backup-manifest "$CUTOVER_BACKUP_MANIFEST_FILE"
-run_poller migrate-canonical --stage finalize --apply \
-  --backup-manifest "$CUTOVER_BACKUP_MANIFEST_FILE"
-run_poller audit-canonical --strict
-run_poller rebuild
+  FIRST_PARSE_LOG="${CUTOVER_LOG_FILE}.parse-first"
+  SECOND_PARSE_LOG="${CUTOVER_LOG_FILE}.parse-second"
+  run_poller parse | tee "$FIRST_PARSE_LOG"
+  grep -Fq 'parse: attempted=274 selected=274 unchanged=0 materialized=274 quarantined=0 partial=0 errors=0' "$FIRST_PARSE_LOG"
+  run_poller parse | tee "$SECOND_PARSE_LOG"
+  grep -Fq 'parse: attempted=274 selected=274 unchanged=274 materialized=0 quarantined=0 partial=0 errors=0' "$SECOND_PARSE_LOG"
+
+  run_poller audit-canonical --strict --record-finalization-readiness \
+    --backup-manifest "$CUTOVER_BACKUP_MANIFEST_FILE"
+  run_poller migrate-canonical --stage finalize --apply \
+    --backup-manifest "$CUTOVER_BACKUP_MANIFEST_FILE"
+  run_poller audit-canonical --strict
+  run_poller rebuild
+fi
 
 API_LIVE_LOG="${CUTOVER_LOG_FILE}.api-live"
 printf 'live integration command: RUN_LIVE_CANONICAL=1 npm run test:integration -w packages/api\n'
