@@ -16,7 +16,7 @@ export interface SourceSpan {
   end: number;
 }
 
-export type DetectionDetail = string | number | boolean | null;
+export type DetectionDetail = string | number | boolean | null | string[];
 
 /** Serializable structural evidence returned by one detector. */
 export interface DetectionEvidence {

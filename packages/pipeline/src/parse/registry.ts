@@ -32,6 +32,7 @@ function redactDetailString(source: PristineSource, value: string): string {
   );
   if (
     environmentValues.includes(value) ||
+    value === source.pristineBody ||
     (value.length >= 16 && source.pristineBody.includes(value))
   ) {
     return "[redacted]";
@@ -43,6 +44,9 @@ function redactDetailString(source: PristineSource, value: string): string {
 }
 
 function cleanDetail(source: PristineSource, detail: DetectionDetail): DetectionDetail {
+  if (Array.isArray(detail)) {
+    return detail.slice(0, 8).map((value) => redactDetailString(source, value));
+  }
   if (typeof detail === "string") return redactDetailString(source, detail);
   if (typeof detail === "number" && !Number.isFinite(detail)) return null;
   return detail;
