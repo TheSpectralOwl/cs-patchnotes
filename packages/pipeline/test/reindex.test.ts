@@ -6,7 +6,12 @@ import {
   type RankedFragmentHit,
 } from "@cs-patchnotes/shared";
 import type { Meilisearch } from "meilisearch";
-import { ensureIndexAndSettings, reindexFromSqlite, rebuild } from "../src/reindex.js";
+import {
+  ensureIndexAndSettings,
+  reindexFromSqlite,
+  rebuild,
+  buildFragmentDocs,
+} from "../src/reindex.js";
 import { COMMANDS } from "../src/cli.js";
 
 interface StubState {
@@ -18,10 +23,22 @@ interface StubState {
   filterable: string[];
   primaryKeys: Array<string | undefined>;
   batches: MeiliFragmentDocument[][];
-  order: Array<"delete" | "settings" | "load">;
+  order: Array<"delete" | "settings" | "load" | "clear">;
+  /**
+   * Ids the disposable index currently holds. Models Meili's document set so a
+   * test can seed a stale id and assert an exact-mirror reindex removes it.
+   */
+  documentIds: Set<string>;
 }
 
-type FailingOperation = "delete" | "searchable" | "displayed" | "sortable" | "filterable" | "load";
+type FailingOperation =
+  | "delete"
+  | "searchable"
+  | "displayed"
+  | "sortable"
+  | "filterable"
+  | "load"
+  | "clear";
 
 function makeStubClient(failing?: FailingOperation): { client: Meilisearch; state: StubState } {
   const state: StubState = {
@@ -34,9 +51,13 @@ function makeStubClient(failing?: FailingOperation): { client: Meilisearch; stat
     primaryKeys: [],
     batches: [],
     order: [],
+    documentIds: new Set<string>(),
   };
 
-  const task = (operation: FailingOperation, label: "delete" | "settings" | "load") => ({
+  const task = (
+    operation: FailingOperation,
+    label: "delete" | "settings" | "load" | "clear",
+  ) => ({
     waitTask: async () => {
       state.order.push(label);
       return operation === failing
@@ -62,9 +83,14 @@ function makeStubClient(failing?: FailingOperation): { client: Meilisearch; stat
       state.filterable = attributes;
       return task("filterable", "settings");
     },
+    deleteAllDocuments: () => {
+      state.documentIds.clear();
+      return task("clear", "clear");
+    },
     addDocuments: (documents: MeiliFragmentDocument[], options?: { primaryKey?: string }) => {
       state.batches.push(documents);
       state.primaryKeys.push(options?.primaryKey);
+      for (const document of documents) state.documentIds.add(document.id);
       return task("load", "load");
     },
   };
@@ -83,11 +109,41 @@ function makeStubClient(failing?: FailingOperation): { client: Meilisearch; stat
   return { client: client as unknown as Meilisearch, state };
 }
 
+/**
+ * Bind a document to a current source head whose parse state is selected +
+ * complete. The projection guard only emits fragments for a head in this state,
+ * so the canonical fixtures must carry it to stay projectable.
+ */
+function seedSelectedCompleteHead(
+  db: ReturnType<typeof openDb>,
+  documentId: string,
+  sourceRecordId: string,
+  bodySha: string,
+  fetchedAt: number,
+): void {
+  db.prepare(
+    `INSERT INTO source_records
+       (id, document_id, source_adapter, body_format, pristine_body, body_sha256, fetched_at)
+     VALUES (?, ?, 'steam_news', 'bbcode', '[b]body[/b]', ?, ?)`,
+  ).run(sourceRecordId, documentId, bodySha, fetchedAt);
+  db.prepare(
+    `INSERT INTO document_source_heads (document_id, source_adapter, source_record_id, updated_at)
+     VALUES (?, 'steam_news', ?, ?)`,
+  ).run(documentId, sourceRecordId, fetchedAt);
+  db.prepare(
+    `INSERT INTO document_parse_state
+       (document_id, source_adapter, source_record_id, selection_state,
+        parser_key, parser_version, materialization_status, updated_at)
+     VALUES (?, 'steam_news', ?, 'selected', 'steam-news-bbcode', '1', 'complete', ?)`,
+  ).run(documentId, sourceRecordId, fetchedAt);
+}
+
 function seedCanonicalProjection(db: ReturnType<typeof openDb>): MeiliFragmentDocument[] {
   db.prepare(
     `INSERT INTO documents (id, content_kind, title, posted_at, game, channel, parse_status)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run("doc_alpha", "patch_notes", "Counter-Strike 2 Update", 1_700_000_000, "cs2", "mainline", "parsed");
+  seedSelectedCompleteHead(db, "doc_alpha", "src_alpha", "c".repeat(64), 1_700_000_000);
 
   const insertBlock = db.prepare(
     `INSERT INTO blocks
@@ -252,6 +308,7 @@ function seedManyFragments(db: ReturnType<typeof openDb>, count: number): void {
     `INSERT INTO documents (id, content_kind, title, posted_at, game, channel, parse_status)
      VALUES ('doc_many', 'patch_notes', 'Large Update', 1700000001, 'cs2', 'mainline', 'parsed')`,
   ).run();
+  seedSelectedCompleteHead(db, "doc_many", "src_many", "d".repeat(64), 1_700_000_001);
   db.prepare(
     `INSERT INTO blocks (id, document_id, kind, preorder, sibling_order, text, label)
      VALUES ('block_many_root', 'doc_many', 'heading', 0, 0, 'ROOT', 'ROOT')`,
@@ -278,6 +335,75 @@ function seedManyFragments(db: ReturnType<typeof openDb>, count: number): void {
   });
   insert();
 }
+
+/**
+ * A document whose blocks/fragments were materialized by a prior parse but whose
+ * CURRENT source head is now quarantined (zero-match). SQLite keeps the obsolete
+ * rows as private history; the projection must not expose them.
+ */
+function seedQuarantinedDocument(db: ReturnType<typeof openDb>): void {
+  db.prepare(
+    `INSERT INTO documents (id, content_kind, title, posted_at, game, channel, parse_status)
+     VALUES ('doc_quar', 'patch_notes', 'Superseded Update', 1700000002, 'cs2', 'mainline', 'quarantined')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO source_records
+       (id, document_id, source_adapter, body_format, pristine_body, body_sha256, fetched_at)
+     VALUES ('src_quar', 'doc_quar', 'steam_news', 'bbcode', '[b]no longer parses[/b]', ?, 1700000002)`,
+  ).run("e".repeat(64));
+  db.prepare(
+    `INSERT INTO document_source_heads (document_id, source_adapter, source_record_id, updated_at)
+     VALUES ('doc_quar', 'steam_news', 'src_quar', 1700000002)`,
+  ).run();
+  // Current head parse state is quarantined: not selected, not complete.
+  db.prepare(
+    `INSERT INTO document_parse_state
+       (document_id, source_adapter, source_record_id, selection_state,
+        materialization_status, updated_at)
+     VALUES ('doc_quar', 'steam_news', 'src_quar', 'quarantined_zero_match', 'unparsed', 1700000002)`,
+  ).run();
+  // Retained obsolete materialization from the prior selected+complete parse.
+  db.prepare(
+    `INSERT INTO blocks (id, document_id, parent_block_id, kind, preorder, sibling_order, text, label)
+     VALUES ('block_quar', 'doc_quar', NULL, 'heading', 0, 0, 'OLD CONTENT', 'OLD CONTENT')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO search_fragments
+       (id, document_id, block_id, media_item_id, fragment_order, fragment_kind, text, text_sha256, group_anchor_block_id)
+     VALUES ('fragment_quar', 'doc_quar', 'block_quar', NULL, 0, 'block_text', 'OLD CONTENT', ?, 'block_quar')`,
+  ).run("f".repeat(64));
+}
+
+test("a full reindex deletes stale ids so the index exactly mirrors sqlite fragments", async () => {
+  const db = openDb(":memory:");
+  seedCanonicalProjection(db);
+  const projected = buildFragmentDocs(db);
+  const { client, state } = makeStubClient();
+  // A document the current SQLite projection does not produce, left over from an
+  // earlier index generation.
+  state.documentIds.add("fragment_ghost_stale");
+
+  await reindexFromSqlite(client, db);
+
+  expect(state.documentIds.has("fragment_ghost_stale")).toBe(false);
+  expect(state.documentIds.size).toBe(projected.length);
+  db.close();
+});
+
+test("excludes fragments whose current source head is quarantined", async () => {
+  const db = openDb(":memory:");
+  seedCanonicalProjection(db);
+  seedQuarantinedDocument(db);
+  const { client, state } = makeStubClient();
+
+  const docs = buildFragmentDocs(db);
+  expect(docs.some((document) => document.id === "fragment_quar")).toBe(false);
+  expect(docs.some((document) => document.document_id === "doc_quar")).toBe(false);
+
+  await reindexFromSqlite(client, db);
+  expect(state.documentIds.has("fragment_quar")).toBe(false);
+  db.close();
+});
 
 test("projects exactly one allowed document per canonical search fragment", async () => {
   const db = openDb(":memory:");
