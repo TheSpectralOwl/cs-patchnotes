@@ -139,6 +139,7 @@ describeLive("live canonical fragment search and SQLite hydration", () => {
   });
 
   test("uses the canonical private index settings and exact corpus baseline", async () => {
+    expect(db.readonly).toBe(true);
     expect(db.pragma("user_version", { simple: true })).toBe(2);
     const counts = db
       .prepare(

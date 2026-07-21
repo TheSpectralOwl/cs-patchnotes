@@ -305,11 +305,13 @@ test("propagates arbitrary target and manifest paths through every ordered live 
   );
   assert.ok(api);
   assert.ok(api.argv.includes("RUN_LIVE_CANONICAL=1"));
-  assert.ok(
-    api.argv.includes(
-      `type=bind,src=${dirname(harness.target)},dst=${dirname(harness.target)},readonly`,
-    ),
+  const mounts = api.argv.filter((value, index) => api.argv[index - 1] === "--mount");
+  assert.ok(mounts.includes(`type=bind,src=${harness.target},dst=${harness.target},readonly`));
+  const companionMount = mounts.find(
+    (value) => value.endsWith(`,dst=${dirname(harness.target)}`) && !value.endsWith(",readonly"),
   );
+  assert.ok(companionMount, "API acceptance requires a writable isolated companion directory");
+  assert.match(companionMount, /canonical evidence\/\.api-sqlite-companions\./);
   assert.deepEqual(api.argv.slice(api.argv.indexOf("cs-patchnotes-api-live-test:local") + 1), [
     "npm",
     "run",
@@ -344,6 +346,7 @@ test("propagates arbitrary target and manifest paths through every ordered live 
   assert.match(log, /RUN_LIVE_CANONICAL=1 npm run test:integration -w packages\/api/);
   assert.match(log, /LIVE_CANONICAL_ENV=1/);
   assert.match(log, /LIVE_CANONICAL_ASSERTIONS_PASSED/);
+  assert.match(log, /api_sqlite_content_unchanged sha256=/);
   assert.doesNotMatch(log, /skipped/i);
 });
 
