@@ -1,4 +1,5 @@
 import Database, { type Database as DatabaseType } from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -47,6 +48,45 @@ interface CanonicalFragmentRow {
   group_anchor_block_id: string | null;
   posted_at: number;
   block_kind: string;
+}
+
+interface TitleMatchDiagnostic {
+  query_candidate: string;
+  document_id: string;
+  projection_count: number;
+  matched_fields: string[];
+}
+
+const MAX_TITLE_MATCH_DIAGNOSTICS = 32;
+const SAFE_MATCH_FIELDS = new Set(["text", "title", "ancestor_labels"]);
+
+function titleCandidateId(query: string): string {
+  return `sha256:${createHash("sha256").update(query, "utf8").digest("hex").slice(0, 16)}`;
+}
+
+function appendTitleMatchDiagnostics(
+  diagnostics: TitleMatchDiagnostic[],
+  query: string,
+  groups: Map<string, Array<[number, LiveHit]>>,
+): void {
+  if (diagnostics.length >= MAX_TITLE_MATCH_DIAGNOSTICS) return;
+  for (const [documentId, entries] of groups) {
+    if (entries.length < 2) continue;
+    const matchedFields = [...new Set(
+      entries.flatMap(([, hit]) => {
+        const fields = Object.keys(hit._matchesPosition ?? {});
+        return fields.map((field) => SAFE_MATCH_FIELDS.has(field) ? field : "unexpected");
+      }),
+    )].sort();
+    diagnostics.push({
+      query_candidate: titleCandidateId(query),
+      document_id: documentId,
+      projection_count: entries.length,
+      matched_fields: matchedFields,
+    });
+    if (diagnostics.length >= MAX_TITLE_MATCH_DIAGNOSTICS) return;
+    break;
+  }
 }
 
 function selectCrossDocumentDirectRow(
@@ -173,6 +213,39 @@ test("title-only discovery prioritizes date-bearing full-title phrases", () => {
   expect(candidates[0]).toBe('"Release Notes for 10/24/2024"');
   expect(candidates).toContain('"10/24/2024"');
   expect(candidates).toContain("10/24/2024");
+});
+
+test("title-match diagnostics are bounded and contain only redacted structural evidence", () => {
+  const diagnostics: TitleMatchDiagnostic[] = [];
+  const hit = (documentId: string, fields: string[]): LiveHit => ({
+    id: `${documentId}-fragment`,
+    fragment_id: `${documentId}-fragment`,
+    block_id: `${documentId}-block`,
+    document_id: documentId,
+    primary_release_id: null,
+    group_anchor_block_id: null,
+    fragment_kind: "block_text",
+    content_kind: "patch_notes",
+    posted_at: 1,
+    _matchesPosition: Object.fromEntries(fields.map((field) => [field, []])),
+  });
+  for (let index = 0; index < 40; index += 1) {
+    const documentId = `doc-${index}`;
+    appendTitleMatchDiagnostics(
+      diagnostics,
+      `private title ${index}`,
+      new Map([[documentId, [[0, hit(documentId, ["title", "private_field"])], [1, hit(documentId, ["text"])]]]]),
+    );
+  }
+  expect(diagnostics).toHaveLength(MAX_TITLE_MATCH_DIAGNOSTICS);
+  expect(diagnostics[0]).toEqual({
+    query_candidate: expect.stringMatching(/^sha256:[a-f0-9]{16}$/),
+    document_id: "doc-0",
+    projection_count: 2,
+    matched_fields: ["text", "title", "unexpected"],
+  });
+  expect(JSON.stringify(diagnostics)).not.toContain("private title");
+  expect(JSON.stringify(diagnostics)).not.toContain("private_field");
 });
 
 const describeLive = LIVE_ENABLED ? describe : describe.skip;
@@ -333,6 +406,7 @@ describeLive("live canonical fragment search and SQLite hydration", () => {
     let proof:
       | { query: string; documentId: string; raw: LiveHit[]; earliestRank: number }
       | undefined;
+    const diagnostics: TitleMatchDiagnostic[] = [];
     for (const query of candidates) {
       const raw = (
         await index.search(query, {
@@ -343,6 +417,7 @@ describeLive("live canonical fragment search and SQLite hydration", () => {
         })
       ).hits as LiveHit[];
       const byDocument = Map.groupBy(raw.entries(), ([, hit]) => hit.document_id);
+      appendTitleMatchDiagnostics(diagnostics, query, byDocument);
       for (const [documentId, entries] of byDocument) {
         const titleOnly = entries.every(([, hit]) => {
           const fields = Object.keys(hit._matchesPosition ?? {});
@@ -359,6 +434,9 @@ describeLive("live canonical fragment search and SQLite hydration", () => {
         }
       }
       if (proof !== undefined) break;
+    }
+    if (proof === undefined) {
+      console.info(`TITLE_MATCH_DIAGNOSTICS ${JSON.stringify(diagnostics)}`);
     }
     expect(proof, "no repeated title-only projection window was found").toBeDefined();
 
