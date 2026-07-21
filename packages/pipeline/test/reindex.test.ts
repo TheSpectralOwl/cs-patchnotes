@@ -430,6 +430,34 @@ test("allows a first rebuild when only the target index is absent", async () => 
   db.close();
 });
 
+test("allows a first rebuild when deletion completes as an index-not-found failed task", async () => {
+  const db = openDb(":memory:");
+  seedCanonicalProjection(db);
+  const { client, state } = makeStubClient();
+  const baseDelete = client.deleteIndex.bind(client);
+  client.deleteIndex = ((uid: string) => {
+    const enqueued = baseDelete(uid);
+    enqueued.waitTask = async () => {
+      state.order.push("delete");
+      return {
+        uid: 42,
+        status: "failed",
+        error: {
+          message: "Index `canonical_fragments` not found.",
+          code: "index_not_found",
+          type: "invalid_request",
+          link: "https://docs.meilisearch.com/errors#index_not_found",
+        },
+      };
+    };
+    return enqueued;
+  }) as typeof client.deleteIndex;
+
+  await expect(rebuild(client, db)).resolves.toEqual({ documents: 4 });
+  expect(state.order).toContain("load");
+  db.close();
+});
+
 test("cli wires every pipeline and canonical maintenance subcommand", () => {
   expect(Object.keys(COMMANDS).sort()).toEqual([
     "audit-canonical",
