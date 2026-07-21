@@ -199,9 +199,11 @@ test("two consecutive rebuilds over the same SQLite data emit identical document
   db.close();
 });
 
-test("cli wires all subcommands: poll, backfill, parse, reindex, rebuild", () => {
+test("cli wires every pipeline and canonical maintenance subcommand", () => {
   expect(Object.keys(COMMANDS).sort()).toEqual([
+    "audit-canonical",
     "backfill",
+    "migrate-canonical",
     "parse",
     "poll",
     "rebuild",
