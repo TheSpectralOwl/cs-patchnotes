@@ -41,8 +41,8 @@ afterEach(() => {
   while (openDatabases.length > 0) openDatabases.pop()?.close();
 });
 
-describe("transitional canonical schema", () => {
-  test("creates canonical and prototype relations at schema version one", () => {
+describe("canonical schema", () => {
+  test("creates canonical relations at the single canonical schema version", () => {
     const db = freshDb();
     const names = new Set(
       db
@@ -54,10 +54,6 @@ describe("transitional canonical schema", () => {
     expect(db.pragma("user_version", { simple: true })).toBe(1);
     expect([...names]).toEqual(
       expect.arrayContaining([
-        "updates",
-        "sections",
-        "lines",
-        "line_tags",
         "documents",
         "source_records",
         "document_source_heads",
@@ -67,7 +63,6 @@ describe("transitional canonical schema", () => {
         "document_parse_state",
         "parse_runs",
         "parse_diagnostics",
-        "canonical_cutover_audits",
         "blocks",
         "media_items",
         "search_fragments",
@@ -76,6 +71,9 @@ describe("transitional canonical schema", () => {
         "meta",
       ]),
     );
+    for (const legacy of ["updates", "sections", "lines", "line_tags", "canonical_cutover_audits"]) {
+      expect(names.has(legacy)).toBe(false);
+    }
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     expect(db.pragma("foreign_key_check")).toEqual([]);
   });

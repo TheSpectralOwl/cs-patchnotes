@@ -1,203 +1,71 @@
-import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { openDb } from "../src/db/client.js";
 import {
-  EXPANSION_SCHEMA_VERSION,
-  LATEST_SCHEMA_VERSION,
+  CANONICAL_SCHEMA_VERSION,
   initializeCanonicalSchema,
   inspectSchemaVersion,
-  runMigrations,
 } from "../src/db/migrations.js";
 
-const temporaryDirectories: string[] = [];
 const openDatabases: DatabaseType[] = [];
 
 const sha256 = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
-
-function temporaryDatabasePath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "canonical-schema-"));
-  temporaryDirectories.push(directory);
-  return join(directory, "legacy.sqlite");
-}
-
-function seedLegacyDatabase(path: string): { gid: string; rawBody: string } {
-  const db = new Database(path);
-  const gid = "1010228711585010877";
-  const rawBody = "[ GAMEPLAY ]\r\n– Preserved emoji: 🧪\r\n[img]literal bytes[/img]";
-  db.pragma("foreign_keys = ON");
-  db.exec(`
-    CREATE TABLE updates (
-      id TEXT PRIMARY KEY,
-      posted_at INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      url TEXT,
-      feedname TEXT,
-      game TEXT NOT NULL,
-      raw_body TEXT NOT NULL,
-      fetched_at INTEGER NOT NULL,
-      channel TEXT NOT NULL DEFAULT 'mainline'
-    );
-    CREATE TABLE sections (
-      id TEXT PRIMARY KEY,
-      update_id TEXT NOT NULL REFERENCES updates(id) ON DELETE CASCADE,
-      section_index INTEGER NOT NULL,
-      header TEXT,
-      UNIQUE(update_id, section_index)
-    );
-    CREATE TABLE lines (
-      id TEXT PRIMARY KEY,
-      section_id TEXT NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
-      update_id TEXT NOT NULL REFERENCES updates(id) ON DELETE CASCADE,
-      line_index INTEGER NOT NULL,
-      text TEXT NOT NULL,
-      game TEXT NOT NULL,
-      subheader TEXT,
-      parent_line_index INTEGER,
-      UNIQUE(section_id, line_index)
-    );
-    CREATE TABLE line_tags (
-      line_id TEXT NOT NULL REFERENCES lines(id) ON DELETE CASCADE,
-      kind TEXT NOT NULL,
-      category TEXT,
-      entity TEXT,
-      source TEXT NOT NULL,
-      confidence REAL,
-      PRIMARY KEY (line_id, kind, category, entity)
-    );
-    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-  `);
-  db.prepare(
-    `INSERT INTO updates
-       (id, posted_at, title, url, feedname, game, raw_body, fetched_at, channel)
-     VALUES (?, 1, 'Legacy Update', 'https://steamcommunity.com/games/CSGO/announcements/detail/1',
-             'steam_community_announcements', 'csgo', ?, 2, 'mainline')`,
-  ).run(gid, rawBody);
-  db.prepare("INSERT INTO sections (id, update_id, section_index, header) VALUES (?, ?, 0, 'GAMEPLAY')").run(
-    `${gid}_0`,
-    gid,
-  );
-  db.prepare(
-    `INSERT INTO lines
-       (id, section_id, update_id, line_index, text, game, subheader, parent_line_index)
-     VALUES (?, ?, ?, 0, 'Preserved emoji: 🧪', 'csgo', NULL, NULL)`,
-  ).run(`${gid}_0_0`, `${gid}_0`, gid);
-  db.close();
-  return { gid, rawBody };
-}
 
 function track<T extends DatabaseType>(db: T): T {
   openDatabases.push(db);
   return db;
 }
 
+function seedCanonicalDocument(
+  db: DatabaseType,
+  gid: string,
+  rawBody: string,
+): { documentId: string; sourceRecordId: string } {
+  const documentId = "doc-seed";
+  const sourceRecordId = "source-seed";
+  db.prepare(
+    `INSERT INTO documents
+       (id, content_kind, title, posted_at, game, channel, parse_status)
+     VALUES (?, 'patch_notes', 'Seed Update', 1, 'csgo', 'mainline', 'unparsed')`,
+  ).run(documentId);
+  db.prepare(
+    `INSERT INTO source_records
+       (id, document_id, source_adapter, body_format, pristine_body, body_sha256, fetched_at)
+     VALUES (?, ?, 'steam_news', 'bbcode', ?, ?, 2)`,
+  ).run(sourceRecordId, documentId, rawBody, sha256(rawBody));
+  db.prepare(
+    `INSERT INTO document_source_heads
+       (document_id, source_adapter, source_record_id, updated_at)
+     VALUES (?, 'steam_news', ?, 2)`,
+  ).run(documentId, sourceRecordId);
+  db.prepare(
+    `INSERT INTO external_identifiers (namespace, value, document_id, created_at)
+     VALUES ('steam_news_gid', ?, ?, 2)`,
+  ).run(gid, documentId);
+  return { documentId, sourceRecordId };
+}
+
 afterEach(() => {
   while (openDatabases.length > 0) openDatabases.pop()?.close();
-  while (temporaryDirectories.length > 0) {
-    const directory = temporaryDirectories.pop();
-    if (directory) rmSync(directory, { recursive: true, force: true });
-  }
 });
 
-describe("versioned additive migration", () => {
-  test("detects a legacy database repeatedly without migrating it on open", () => {
-    const path = temporaryDatabasePath();
-    const { rawBody } = seedLegacyDatabase(path);
+describe("canonical schema initialization", () => {
+  test("initializes a fresh database at the single canonical version and is idempotent", () => {
+    const db = track(openDb(":memory:"));
 
-    const first = track(openDb(path));
-    const firstInspection = inspectSchemaVersion(first);
-    const secondInspection = inspectSchemaVersion(first);
-    expect(firstInspection).toEqual(secondInspection);
-    expect(firstInspection.state).toBe("legacy");
-    expect(firstInspection.userVersion).toBe(0);
+    const first = inspectSchemaVersion(db);
+    expect(first.state).toBe("canonical");
+    expect(first.userVersion).toBe(CANONICAL_SCHEMA_VERSION);
+    expect(db.pragma("user_version", { simple: true })).toBe(CANONICAL_SCHEMA_VERSION);
+
+    // Calling initialize again on the same DB is a no-op that leaves the schema intact.
+    const reinitialized = initializeCanonicalSchema(db);
+    expect(reinitialized.state).toBe("canonical");
+    expect(reinitialized.userVersion).toBe(CANONICAL_SCHEMA_VERSION);
+
     expect(
-      first.prepare("SELECT raw_body FROM updates").pluck().get(),
-    ).toBe(rawBody);
-    expect(
-      first.prepare("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'documents'").pluck().get(),
-    ).toBe(0);
-  });
-
-  test("expands legacy storage additively with byte parity and stable IDs on retry", () => {
-    const path = temporaryDatabasePath();
-    const { gid, rawBody } = seedLegacyDatabase(path);
-    const db = track(new Database(path));
-    db.pragma("foreign_keys = ON");
-
-    runMigrations(db);
-    expect(inspectSchemaVersion(db).state).toBe("transitional");
-    expect(db.pragma("user_version", { simple: true })).toBe(EXPANSION_SCHEMA_VERSION);
-
-    const first = db
-      .prepare(
-        `SELECT d.id AS document_id, s.id AS source_record_id, s.pristine_body, s.body_sha256,
-                h.source_record_id AS current_source_record_id
-           FROM documents d
-           JOIN external_identifiers e ON e.document_id = d.id
-           JOIN source_records s ON s.document_id = d.id
-           JOIN document_source_heads h
-             ON h.document_id = d.id AND h.source_adapter = s.source_adapter
-          WHERE e.namespace = 'steam_news_gid' AND e.value = ?`,
-      )
-      .get(gid) as {
-      document_id: string;
-      source_record_id: string;
-      pristine_body: string;
-      body_sha256: string;
-      current_source_record_id: string;
-    };
-    expect(first.pristine_body).toBe(rawBody);
-    expect(Buffer.from(first.pristine_body, "utf8")).toEqual(Buffer.from(rawBody, "utf8"));
-    expect(first.body_sha256).toBe(sha256(rawBody));
-    expect(first.current_source_record_id).toBe(first.source_record_id);
-    expect(db.prepare("SELECT count(*) FROM updates").pluck().get()).toBe(1);
-    expect(db.prepare("SELECT count(*) FROM sections").pluck().get()).toBe(1);
-    expect(db.prepare("SELECT count(*) FROM lines").pluck().get()).toBe(1);
-
-    runMigrations(db);
-    const retried = db
-      .prepare(
-        `SELECT d.id AS document_id, s.id AS source_record_id
-           FROM documents d
-           JOIN external_identifiers e ON e.document_id = d.id
-           JOIN source_records s ON s.document_id = d.id
-          WHERE e.namespace = 'steam_news_gid' AND e.value = ?`,
-      )
-      .get(gid) as { document_id: string; source_record_id: string };
-    expect(retried).toEqual({
-      document_id: first.document_id,
-      source_record_id: first.source_record_id,
-    });
-    expect(db.prepare("SELECT count(*) FROM documents").pluck().get()).toBe(1);
-    expect(db.prepare("SELECT count(*) FROM source_records").pluck().get()).toBe(1);
-    expect(db.pragma("foreign_key_check")).toEqual([]);
-  });
-
-  test("keeps additive expansion at version 1 and creates fresh canonical-only version 2 separately", () => {
-    const legacyPath = temporaryDatabasePath();
-    seedLegacyDatabase(legacyPath);
-    const legacy = track(new Database(legacyPath));
-    legacy.pragma("foreign_keys = ON");
-
-    runMigrations(legacy);
-    runMigrations(legacy);
-    expect(legacy.pragma("user_version", { simple: true })).toBe(EXPANSION_SCHEMA_VERSION);
-    expect(inspectSchemaVersion(legacy).state).toBe("transitional");
-    expect(legacy.prepare("SELECT count(*) FROM updates").pluck().get()).toBe(1);
-
-    const fresh = track(new Database(temporaryDatabasePath()));
-    fresh.pragma("foreign_keys = ON");
-    initializeCanonicalSchema(fresh);
-    initializeCanonicalSchema(fresh);
-
-    expect(fresh.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
-    expect(inspectSchemaVersion(fresh).state).toBe("canonical");
-    expect(
-      fresh
+      db
         .prepare(
           "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('updates','sections','lines','line_tags') ORDER BY name",
         )
@@ -205,16 +73,16 @@ describe("versioned additive migration", () => {
         .all(),
     ).toEqual([]);
     expect(
-      fresh.prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='documents'").pluck().get(),
+      db.prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='documents'").pluck().get(),
     ).toBe(1);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 
   test("keeps pristine revisions append-only and selects changed bytes through one explicit head", () => {
-    const path = temporaryDatabasePath();
-    const { gid, rawBody } = seedLegacyDatabase(path);
-    const db = track(new Database(path));
-    db.pragma("foreign_keys = ON");
-    runMigrations(db);
+    const db = track(openDb(":memory:"));
+    const gid = "1010228711585010877";
+    const rawBody = "[ GAMEPLAY ]\r\n– Preserved emoji: 🧪\r\n[img]literal bytes[/img]";
+    const { documentId, sourceRecordId } = seedCanonicalDocument(db, gid, rawBody);
 
     const first = db
       .prepare(
@@ -224,18 +92,20 @@ describe("versioned additive migration", () => {
           WHERE e.namespace = 'steam_news_gid' AND e.value = ?`,
       )
       .get(gid) as Record<string, string | number | null>;
+    expect(first.id).toBe(sourceRecordId);
+
     const changedBody = `${rawBody}\n– A later correction.`;
     db.prepare(
       `INSERT INTO source_records
          (id, document_id, source_adapter, body_format, pristine_body, body_sha256,
           fetched_at, supersedes_source_record_id)
        VALUES ('source-revision-2', ?, 'steam_news', ?, ?, ?, 3, ?)`,
-    ).run(first.document_id, first.body_format, changedBody, sha256(changedBody), first.id);
+    ).run(documentId, first.body_format, changedBody, sha256(changedBody), first.id);
     db.prepare(
       `UPDATE document_source_heads
           SET source_record_id = 'source-revision-2', updated_at = 3
         WHERE document_id = ? AND source_adapter = 'steam_news'`,
-    ).run(first.document_id);
+    ).run(documentId);
 
     const revisions = db
       .prepare(
@@ -244,7 +114,7 @@ describe("versioned additive migration", () => {
           WHERE document_id = ?
           ORDER BY fetched_at`,
       )
-      .all(first.document_id) as Array<{
+      .all(documentId) as Array<{
       id: string;
       pristine_body: string;
       body_sha256: string;
@@ -273,16 +143,15 @@ describe("versioned additive migration", () => {
             WHERE h.document_id = ? AND h.source_adapter = 'steam_news'`,
         )
         .pluck()
-        .get(first.document_id),
+        .get(documentId),
     ).toBe(changedBody);
   });
 
   test("rejects every direct mutation of an immutable source revision", () => {
-    const path = temporaryDatabasePath();
-    const { gid } = seedLegacyDatabase(path);
-    const db = track(new Database(path));
-    db.pragma("foreign_keys = ON");
-    runMigrations(db);
+    const db = track(openDb(":memory:"));
+    const gid = "1010228711585010877";
+    const rawBody = "[ GAMEPLAY ]\r\n– Preserved emoji: 🧪\r\n[img]literal bytes[/img]";
+    seedCanonicalDocument(db, gid, rawBody);
     const source = db
       .prepare(
         `SELECT s.* FROM source_records s

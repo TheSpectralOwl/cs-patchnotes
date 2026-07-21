@@ -26,28 +26,9 @@ export * from "./db/ids.js";
 export * from "./db/repositories/documents.js";
 export * from "./db/repositories/hydration.js";
 export {
-  assertCanonicalFinalizationReady,
-  BACKUP_MANIFEST_CONTRACT_VERSION,
-  CANONICAL_EXPANSION_META,
-  canonicalLegacySourceDigest,
-  EXPANSION_SCHEMA_VERSION,
+  CANONICAL_SCHEMA_VERSION,
   initializeCanonicalSchema,
   inspectSchemaVersion,
-  LATEST_SCHEMA_VERSION,
-  MAX_BACKUP_MANIFEST_AGE_MS,
-  migrateToVersion2,
-  readAndValidateBackupManifest,
-  recordCanonicalFinalizationReadiness,
-  runMigrations,
 } from "./db/migrations.js";
-export type {
-  CanonicalBackupFileEvidence,
-  CanonicalBackupManifest,
-  CanonicalFileIdentity,
-  CanonicalTargetEvidence,
-  FinalizationMigrationHooks,
-  SchemaInspection,
-  SchemaState,
-  ValidatedBackupEvidence,
-} from "./db/migrations.js";
+export type { SchemaInspection, SchemaState } from "./db/migrations.js";
 export { openDb } from "./db/client.js";

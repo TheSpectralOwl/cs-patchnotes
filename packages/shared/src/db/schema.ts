@@ -1,60 +1,7 @@
 /**
- * Prototype relations retained while readers and writers move to the canonical
- * model. They are removed only by the separately guarded finalization step.
- */
-export const PROTOTYPE_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS updates (
-  id          TEXT PRIMARY KEY,
-  posted_at   INTEGER NOT NULL,
-  title       TEXT NOT NULL,
-  url         TEXT,
-  feedname    TEXT,
-  game        TEXT NOT NULL,
-  raw_body    TEXT NOT NULL,
-  fetched_at  INTEGER NOT NULL,
-  channel     TEXT NOT NULL DEFAULT 'mainline'
-);
-
-CREATE TABLE IF NOT EXISTS sections (
-  id            TEXT PRIMARY KEY,
-  update_id     TEXT NOT NULL REFERENCES updates(id) ON DELETE CASCADE,
-  section_index INTEGER NOT NULL,
-  header        TEXT,
-  UNIQUE(update_id, section_index)
-);
-
-CREATE TABLE IF NOT EXISTS lines (
-  id                TEXT PRIMARY KEY,
-  section_id        TEXT NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
-  update_id         TEXT NOT NULL REFERENCES updates(id) ON DELETE CASCADE,
-  line_index        INTEGER NOT NULL,
-  text              TEXT NOT NULL,
-  game              TEXT NOT NULL,
-  subheader         TEXT,
-  parent_line_index INTEGER,
-  UNIQUE(section_id, line_index)
-);
-
-CREATE TABLE IF NOT EXISTS line_tags (
-  line_id    TEXT NOT NULL REFERENCES lines(id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL,
-  category   TEXT,
-  entity     TEXT,
-  source     TEXT NOT NULL,
-  confidence REAL,
-  PRIMARY KEY (line_id, kind, category, entity)
-);
-
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-
-CREATE INDEX IF NOT EXISTS idx_lines_update ON lines(update_id);
-CREATE INDEX IF NOT EXISTS idx_lines_game   ON lines(game);
-CREATE INDEX IF NOT EXISTS idx_tags_line    ON line_tags(line_id);
-`;
-
-/**
- * Source-neutral canonical relations. Source bodies are immutable revisions;
- * parser selection and derived output have separate ownership and lifecycles.
+ * Source-neutral canonical relations — the single schema for the database.
+ * Source bodies are immutable revisions; parser selection and derived output
+ * have separate ownership and lifecycles.
  */
 export const CANONICAL_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -190,21 +137,6 @@ CREATE TABLE IF NOT EXISTS parse_diagnostics (
   details_json     TEXT,
   created_at       INTEGER NOT NULL,
   FOREIGN KEY (document_id, source_record_id) REFERENCES source_records(document_id, id)
-);
-
-CREATE TABLE IF NOT EXISTS canonical_cutover_audits (
-  id                       TEXT PRIMARY KEY,
-  manifest_path            TEXT NOT NULL CHECK (length(manifest_path) > 0),
-  manifest_digest          TEXT NOT NULL CHECK (length(manifest_digest) = 64),
-  expansion_id             TEXT NOT NULL CHECK (length(expansion_id) > 0),
-  source_head_digest       TEXT NOT NULL CHECK (length(source_head_digest) = 64),
-  parser_state_digest      TEXT NOT NULL CHECK (length(parser_state_digest) = 64),
-  successful_parse_run_id  TEXT NOT NULL REFERENCES parse_runs(id),
-  noop_parse_run_id        TEXT NOT NULL REFERENCES parse_runs(id),
-  noop_state_digest        TEXT NOT NULL CHECK (length(noop_state_digest) = 64),
-  backup_path              TEXT NOT NULL CHECK (length(backup_path) > 0),
-  backup_sha256            TEXT NOT NULL CHECK (length(backup_sha256) = 64),
-  recorded_at              INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS blocks (
@@ -412,8 +344,5 @@ CREATE INDEX IF NOT EXISTS idx_fragments_document_order ON search_fragments(docu
 CREATE INDEX IF NOT EXISTS idx_fragment_ancestors_block ON fragment_ancestors(ancestor_block_id);
 `;
 
-/** Additive expansion deliberately contains both models at schema version 1. */
-export const TRANSITIONAL_SCHEMA_SQL = `${PROTOTYPE_SCHEMA_SQL}\n${CANONICAL_SCHEMA_SQL}`;
-
-/** Fresh schema version 2 databases contain canonical relations only. */
+/** The sole schema string: a fresh database is initialized to these relations. */
 export const SCHEMA_SQL = CANONICAL_SCHEMA_SQL;
