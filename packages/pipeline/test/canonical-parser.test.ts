@@ -222,7 +222,7 @@ describe("canonical source order and spans", () => {
     ]);
     expect(groupIndexes).toEqual([1, 4]);
     expect(output.blocks[1].sourceSpan).toEqual({ start: 147, end: 1_970 });
-    expect(output.blocks[2].sourceSpan).toEqual({ start: 1_972, end: 2_011 });
+    expect(output.blocks[2].sourceSpan).toEqual({ start: 1_972, end: 2_009 });
     expect(output.blocks[4].sourceSpan).toEqual({ start: 2_111, end: 4_570 });
     expect(output.mediaItems?.filter((item) => item.groupBlockIndex === 1)).toHaveLength(17);
     expect(output.mediaItems?.filter((item) => item.groupBlockIndex === 4)).toHaveLength(23);
@@ -285,7 +285,7 @@ describe("unsupported constructs and semantic-text exclusions", () => {
   test("retains visible labels and captions without locator, alt, raw-tag, or synthetic breadcrumb leakage", () => {
     const body =
       "[h3]Workshop[/h3][p]Read [url=\"https://example.test/private.png\"]patch details[/url].[/p]" +
-      "[img alt=\"secret-alt.png\"]https://cdn.example.test/source-file.png[/img]" +
+      "[img alt=\"secret-alt.png\" caption=\"Visible image caption\"]https://cdn.example.test/source-file.png[/img]" +
       "[p]Visible caption text[/p]";
     const output = steamNewsBbcodeParser.parse(source(body));
     const text = semanticText(output);
@@ -302,6 +302,7 @@ describe("unsupported constructs and semantic-text exclusions", () => {
     expect(output.mediaItems?.[0]).toMatchObject({
       originalLocator: "https://cdn.example.test/source-file.png",
       altText: "secret-alt.png",
+      caption: "Visible image caption",
     });
   });
 
@@ -313,6 +314,18 @@ describe("unsupported constructs and semantic-text exclusions", () => {
       "Use <utility> & read more",
     ]);
     expect(semanticText(output)).not.toContain("example.test");
+  });
+
+  test("applies the same semantic leaf cleanup to plaintext", () => {
+    const output = steamPatchPlaintextParser.parse(source(
+      "[ MISC ]\n- Fixed &lt;utility&gt; &amp; details at https://example.test/private.png",
+      "plain_text",
+    ));
+
+    expect(output.blocks.map((block) => block.text)).toEqual([
+      "MISC",
+      "Fixed <utility> & details at",
+    ]);
   });
 });
 

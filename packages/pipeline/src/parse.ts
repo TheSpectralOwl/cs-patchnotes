@@ -17,6 +17,7 @@ import type {
   ReviewedParserOverride,
 } from "./parse/contract.js";
 import { ParserRegistry } from "./parse/registry.js";
+import { steamNewsBbcodeParser } from "./parse/steam-bbcode.js";
 import { steamPatchPlaintextParser } from "./parse/steam-plaintext.js";
 
 /**
@@ -713,7 +714,10 @@ function summaryLine(summary: ParseRunSummary): string {
 export async function runParse(options: RunParseOptions = {}): Promise<void> {
   const ownsDb = options.db === undefined;
   const db = options.db ?? openDb();
-  const registry = options.registry ?? new ParserRegistry([steamPatchPlaintextParser]);
+  const registry = options.registry ?? new ParserRegistry([
+    steamNewsBbcodeParser,
+    steamPatchPlaintextParser,
+  ]);
   try {
     const summary = parseStoredDocuments(db, registry, options);
     (options.log ?? console.log)(summaryLine(summary));
