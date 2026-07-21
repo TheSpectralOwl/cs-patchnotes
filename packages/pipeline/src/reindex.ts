@@ -41,7 +41,11 @@ export const INDEX_UID = "canonical_fragments";
 
 /** Own semantic text, document title, and hierarchy context remain distinct. */
 const SEARCHABLE = ["text", "title", "ancestor_labels"];
-/** Only identifiers and collapse metadata may be returned from the index. */
+/**
+ * Identifiers, collapse metadata, and searchable fields used solely to obtain
+ * exact match-position evidence may be returned to the private API process.
+ * User-visible values are still hydrated from authoritative SQLite rows.
+ */
 const DISPLAYED = [
   "id",
   "fragment_id",
@@ -52,6 +56,9 @@ const DISPLAYED = [
   "fragment_kind",
   "content_kind",
   "posted_at",
+  "text",
+  "title",
+  "ancestor_labels",
 ];
 const SORTABLE = ["posted_at"];
 const FILTERABLE = ["game", "content_kind", "posted_at", "categories", "entities"];

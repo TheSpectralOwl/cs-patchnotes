@@ -330,6 +330,9 @@ test("uses canonical fragment index settings with an explicit disclosure allowli
     "fragment_kind",
     "content_kind",
     "posted_at",
+    "text",
+    "title",
+    "ancestor_labels",
   ]);
   expect(state.filterable).toEqual(["game", "content_kind", "posted_at", "categories", "entities"]);
   expect(state.sortable).toEqual(["posted_at"]);
