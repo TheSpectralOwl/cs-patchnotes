@@ -234,9 +234,16 @@ function decodeEntities(value: string): string {
 
 function cleanSemanticText(value: string): string {
   return decodeEntities(value)
+    .replace(/\\([\[\]])/g, "$1")
     .replace(/https?:\/\/[^\s<]+/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function bracketHeadingLabel(value: string): string | null {
+  const normalized = cleanSemanticText(value).replace(/^\\\[/, "[").replace(/\\\]$/, "]");
+  const match = normalized.match(BRACKET_HEADING);
+  return match === null ? null : cleanSemanticText(match[1]);
 }
 
 function semanticText(nodes: readonly TreeNode[]): string {
@@ -277,6 +284,7 @@ interface MappingState {
   partial: boolean;
   headings: HeadingEntry[];
   plainBulletParents: number[];
+  plainBulletLists: number[];
 }
 
 function addBlock(state: MappingState, block: CanonicalBlockData): number {
@@ -286,6 +294,16 @@ function addBlock(state: MappingState, block: CanonicalBlockData): number {
 
 function activeParent(state: MappingState, fallback: number | null): number | null {
   return state.headings.at(-1)?.index ?? fallback;
+}
+
+function nearestHeadingParent(state: MappingState, fromIndex: number): number | null {
+  let cursor: number | null = fromIndex;
+  while (cursor !== null) {
+    const block: CanonicalBlockData = state.blocks[cursor];
+    if (block.kind === "heading") return cursor;
+    cursor = block.parentIndex;
+  }
+  return null;
 }
 
 function addHeading(
@@ -392,24 +410,38 @@ function mapList(state: MappingState, node: TagNode, parentIndex: number | null)
     diagnosticCode: null,
   });
 
+  mapListChildren(state, node, listIndex);
+}
+
+function mapListChildren(state: MappingState, node: TagNode, listIndex: number): void {
+  let lastItemIndex: number | null = null;
   for (const child of node.children) {
     if (child.type === "tag" && child.name === "*") {
       const text = semanticText(child.children);
       const itemIndex = text.length === 0
         ? listIndex
         : addTextBlock(state, "patch_change", text, listIndex, child.sourceSpan, "list_item");
+      lastItemIndex = itemIndex === listIndex ? null : itemIndex;
       for (const nested of child.children) {
-        if (nested.type === "tag" && nested.name === "list") mapList(state, nested, itemIndex);
-        else if (nested.type === "unsupported") addUnsupported(state, nested, itemIndex);
-        else if (nested.type === "tag" && nested.name === "img") addImage(state, nested, itemIndex);
+        if (nested.type === "tag" && nested.name === "list") {
+          if (itemIndex === listIndex) mapListChildren(state, nested, listIndex);
+          else mapList(state, nested, itemIndex);
+        } else if (nested.type === "unsupported") {
+          addUnsupported(state, nested, nearestHeadingParent(state, listIndex));
+        } else if (nested.type === "tag" && nested.name === "img") {
+          addImage(state, nested, nearestHeadingParent(state, listIndex));
+        }
       }
     } else if (child.type === "tag" && child.name === "list") {
-      mapList(state, child, listIndex);
+      if (lastItemIndex === null) mapListChildren(state, child, listIndex);
+      else mapList(state, child, lastItemIndex);
     } else if (child.type === "unsupported") {
-      addUnsupported(state, child, listIndex);
+      addUnsupported(state, child, nearestHeadingParent(state, listIndex));
     } else {
       const text = semanticText([child]);
-      if (text.length > 0) addTextBlock(state, "list_item", text, listIndex, child.sourceSpan, "list_text");
+      if (text.length > 0) {
+        lastItemIndex = addTextBlock(state, "list_item", text, listIndex, child.sourceSpan, "list_text");
+      }
     }
   }
 }
@@ -438,9 +470,9 @@ function sourceLines(value: string, start: number): Array<{ text: string; start:
 
 function mapText(state: MappingState, node: TextNode, fallback: number | null): void {
   for (const line of sourceLines(node.value, node.sourceSpan.start)) {
-    const heading = line.text.match(BRACKET_HEADING);
+    const heading = bracketHeadingLabel(line.text);
     if (heading !== null) {
-      addHeading(state, decodeEntities(heading[1].trim()), 2, { start: line.start, end: line.end }, "bracket_heading", fallback);
+      addHeading(state, heading, 2, { start: line.start, end: line.end }, "bracket_heading", fallback);
       continue;
     }
 
@@ -450,7 +482,25 @@ function mapText(state: MappingState, node: TextNode, fallback: number | null): 
       if (text.length === 0) continue;
       const depth = Math.max(0, bullet[1].length + bullet[2].length - 1);
       const parentIndex = depth > 0
-        ? state.plainBulletParents[depth - 1] ?? activeParent(state, fallback)
+        ? (() => {
+            const owner = state.plainBulletParents[depth - 1];
+            if (owner === undefined) return activeParent(state, fallback);
+            const existingList = state.plainBulletLists[depth];
+            if (existingList !== undefined && state.blocks[existingList].parentIndex === owner) {
+              return existingList;
+            }
+            const listIndex = addBlock(state, {
+              kind: "list",
+              parentIndex: owner,
+              text: null,
+              label: null,
+              sourceSpan: { start: line.start, end: line.end },
+              sourceNodeType: "plain_nested_list",
+              diagnosticCode: null,
+            });
+            state.plainBulletLists[depth] = listIndex;
+            return listIndex;
+          })()
         : activeParent(state, fallback);
       const itemIndex = addTextBlock(
         state,
@@ -462,6 +512,7 @@ function mapText(state: MappingState, node: TextNode, fallback: number | null): 
       );
       state.plainBulletParents[depth] = itemIndex;
       state.plainBulletParents.length = depth + 1;
+      state.plainBulletLists.length = depth + 1;
       continue;
     }
 
@@ -476,6 +527,7 @@ function mapText(state: MappingState, node: TextNode, fallback: number | null): 
       "plain_text",
     );
     state.plainBulletParents = [];
+    state.plainBulletLists = [];
   }
 }
 
@@ -485,7 +537,12 @@ function mapParagraph(state: MappingState, node: TagNode, fallback: number | nul
   );
   if (structural.length === 0) {
     const text = semanticText(node.children);
-    if (text.length > 0) addTextBlock(state, "paragraph", text, activeParent(state, fallback), node.sourceSpan, "p");
+    const heading = bracketHeadingLabel(text);
+    if (heading !== null) {
+      addHeading(state, heading, 2, node.sourceSpan, "bracket_heading", fallback);
+    } else if (text.length > 0) {
+      addTextBlock(state, "paragraph", text, activeParent(state, fallback), node.sourceSpan, "p");
+    }
     return;
   }
 
@@ -576,7 +633,58 @@ function mapNode(state: MappingState, node: TreeNode, fallback: number | null): 
     return;
   }
   const text = semanticText(node.children);
-  if (text.length > 0) addTextBlock(state, "paragraph", text, activeParent(state, fallback), node.sourceSpan, node.name);
+  const heading = bracketHeadingLabel(text);
+  if (heading !== null) {
+    addHeading(state, heading, 2, node.sourceSpan, "bracket_heading", fallback);
+  } else if (text.length > 0) {
+    addTextBlock(state, "paragraph", text, activeParent(state, fallback), node.sourceSpan, node.name);
+  }
+}
+
+function subgroupHeading(node: TreeNode): { label: string; sourceSpan: SourceSpan; sourceNodeType: string } | null {
+  const isConciseLabel = (value: string): boolean =>
+    value.length <= 80 && value.split(/\s+/).length <= 8 && !/[.!?]$/.test(value);
+  if (node.type === "tag" && node.name === "p") {
+    const label = semanticText(node.children).replace(/:$/, "").trim();
+    if (label.length > 0 && isConciseLabel(label) && bracketHeadingLabel(label) === null) {
+      return { label, sourceSpan: node.sourceSpan, sourceNodeType: "p_subheading" };
+    }
+  }
+  if (node.type === "text") {
+    const lines = sourceLines(node.value, node.sourceSpan.start);
+    if (lines.length === 1) {
+      const label = cleanSemanticText(lines[0].text).replace(/:$/, "").trim();
+      if (label.length > 0 && isConciseLabel(label) && bracketHeadingLabel(label) === null) {
+        return {
+          label,
+          sourceSpan: { start: lines[0].start, end: lines[0].end },
+          sourceNodeType: "plain_subheading",
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function mapNodes(state: MappingState, nodes: readonly TreeNode[], fallback: number | null): void {
+  nodes.forEach((node, index) => {
+    const next = nodes[index + 1];
+    const subgroup = next?.type === "tag" && next.name === "list"
+      ? subgroupHeading(node)
+      : null;
+    if (subgroup !== null) {
+      addHeading(
+        state,
+        subgroup.label,
+        3,
+        subgroup.sourceSpan,
+        subgroup.sourceNodeType,
+        fallback,
+      );
+      return;
+    }
+    mapNode(state, node, fallback);
+  });
 }
 
 function parse(source: PristineSource) {
@@ -589,6 +697,7 @@ function parse(source: PristineSource) {
     partial: tokenized.status !== "complete" || tree.partial,
     headings: [],
     plainBulletParents: [],
+    plainBulletLists: [],
   };
   for (const diagnostic of tree.diagnostics) {
     if (state.diagnostics.length >= STEAM_MAX_DIAGNOSTICS) break;
@@ -602,7 +711,7 @@ function parse(source: PristineSource) {
       sourceSpan: { start: 0, end: source.pristineBody.length },
     }, null);
   } else {
-    for (const node of tree.children) mapNode(state, node, null);
+    mapNodes(state, tree.children, null);
   }
 
   return {

@@ -316,6 +316,15 @@ describe("unsupported constructs and semantic-text exclusions", () => {
     expect(semanticText(output)).not.toContain("example.test");
   });
 
+  test("does not mistake a trailing URL slash for a self-closing BBCode tag", () => {
+    const body = "[p][url=http://example.test/path/]visible label[/url][/p]";
+    const output = steamNewsBbcodeParser.parse(source(body));
+
+    expect(output.status).toBe("complete");
+    expect(output.blocks.map((block) => block.text)).toEqual(["visible label"]);
+    expect(output.diagnostics).toEqual([]);
+  });
+
   test("applies the same semantic leaf cleanup to plaintext", () => {
     const output = steamPatchPlaintextParser.parse(source(
       "[ MISC ]\n- Fixed &lt;utility&gt; &amp; details at https://example.test/private.png",
@@ -326,6 +335,40 @@ describe("unsupported constructs and semantic-text exclusions", () => {
       "MISC",
       "Fixed <utility> & details at",
     ]);
+  });
+
+  test("accepts compact line headings and literal bracket labels without treating them as unknown tags", () => {
+    const body = "[maps]\n[list]\n[*] Fixed connector\n[/list]\n[p]Team chat shows [T] before text[/p]";
+    const output = steamNewsBbcodeParser.parse(source(body));
+
+    expect(output.status).toBe("complete");
+    expect(output.blocks.some((block) => block.kind === "heading" && block.label === "maps")).toBe(true);
+    expect(output.blocks.some((block) => block.text === "Team chat shows [T] before text")).toBe(true);
+    expect(output.blocks.every((block) => block.kind !== "unsupported")).toBe(true);
+  });
+
+  test("tolerates escaped array brackets and Valve lists that omit item closers", () => {
+    const body = "[ SCRIPTING ]\n[list]\n[*] CSWeaponType\\[1] == PISTOL\n[*] Added another enum\n[/list]";
+    const tokenized = tokenizeSteamBbcode(body);
+    const output = steamNewsBbcodeParser.parse(source(body));
+
+    expect(tokenized.status).toBe("complete");
+    expect(output.status).toBe("complete");
+    expect(output.blocks.some((block) => block.text === "CSWeaponType[1] == PISTOL")).toBe(true);
+    expect(output.blocks.some((block) => block.text === "Added another enum")).toBe(true);
+  });
+
+  test("normalizes a redundant nested list wrapper without producing an invalid list parent", () => {
+    const body = "[ MAPS ]\n[list][list][*] Nested change[/list][/list]";
+    const output = steamNewsBbcodeParser.parse(source(body));
+
+    expect(output.status).toBe("complete");
+    for (const [index, block] of output.blocks.entries()) {
+      if (block.parentIndex === null) continue;
+      const parent = output.blocks[block.parentIndex];
+      expect(index).toBeGreaterThan(block.parentIndex);
+      expect(parent.kind === "list" && block.kind === "list").toBe(false);
+    }
   });
 });
 

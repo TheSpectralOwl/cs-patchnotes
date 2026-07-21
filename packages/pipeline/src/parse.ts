@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   blockId,
   getCurrentSourceRecord,
+  fragmentId,
   openDb,
   sectionId,
   lineId,
@@ -19,6 +20,11 @@ import type {
 import { ParserRegistry } from "./parse/registry.js";
 import { steamNewsBbcodeParser } from "./parse/steam-bbcode.js";
 import { steamPatchPlaintextParser } from "./parse/steam-plaintext.js";
+import {
+  buildSearchFragments,
+  GROUPING_POLICY_VERSION,
+  type SearchFragmentData,
+} from "./parse/fragments.js";
 
 /**
  * The write-side "parse" stage: read the pristine `raw_body` back from SQLite,
@@ -83,11 +89,13 @@ interface StoredOverride {
 
 interface ExistingParseState {
   source_record_id: string;
+  source_sha256: string;
   selection_state: string;
   parser_key: string | null;
   parser_version: string | null;
   materialization_status: string;
   output_sha256: string | null;
+  grouping_policy_version: string | null;
 }
 
 const MAX_OUTPUT_BLOCKS = 10_000;
@@ -131,8 +139,13 @@ function readOverride(
       };
 }
 
-function outputSha256(output: CanonicalParseOutput): string {
-  return createHash("sha256").update(JSON.stringify(output), "utf8").digest("hex");
+function outputSha256(
+  output: CanonicalParseOutput,
+  fragments: readonly SearchFragmentData[],
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ output, fragments, groupingPolicyVersion: GROUPING_POLICY_VERSION }), "utf8")
+    .digest("hex");
 }
 
 function validateSpan(source: PristineSource, start: number, end: number): void {
@@ -264,6 +277,7 @@ function persistSelectionState(
     parserVersion: string | null;
     evidenceJson: string;
     materializationStatus: "unparsed" | "complete" | "partial" | "failed";
+    groupingPolicyVersion: string | null;
     outputHash: string | null;
     runId: string;
     updatedAt: number;
@@ -276,7 +290,7 @@ function persistSelectionState(
         materialization_status, output_sha256, last_parse_run_id, updated_at)
      VALUES
        (@document_id, @source_adapter, @source_record_id, @selection_state,
-        @parser_key, @parser_version, @detector_evidence_json, NULL,
+         @parser_key, @parser_version, @detector_evidence_json, @grouping_policy_version,
         @materialization_status, @output_sha256, @last_parse_run_id, @updated_at)
      ON CONFLICT(document_id, source_adapter) DO UPDATE SET
        source_record_id = excluded.source_record_id,
@@ -298,6 +312,7 @@ function persistSelectionState(
     parser_version: input.parserVersion,
     detector_evidence_json: input.evidenceJson,
     materialization_status: input.materializationStatus,
+    grouping_policy_version: input.groupingPolicyVersion,
     output_sha256: input.outputHash,
     last_parse_run_id: input.runId,
     updated_at: input.updatedAt,
@@ -308,6 +323,7 @@ function replaceCanonicalBlocks(
   db: Database,
   source: PristineSource,
   output: CanonicalParseOutput,
+  fragments: readonly SearchFragmentData[],
 ): void {
   db.prepare("DELETE FROM search_fragments WHERE document_id = ?").run(source.documentId);
   db.prepare("DELETE FROM media_items WHERE document_id = ?").run(source.documentId);
@@ -362,6 +378,50 @@ function replaceCanonicalBlocks(
       media.caption,
       media.altText,
     );
+  }
+
+  const insertFragment = db.prepare(
+    `INSERT INTO search_fragments
+       (id, document_id, block_id, media_item_id, fragment_order, fragment_kind,
+        text, text_sha256, group_anchor_block_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const insertAncestor = db.prepare(
+    `INSERT INTO fragment_ancestors
+       (fragment_id, document_id, depth, ancestor_block_id, label)
+     VALUES (?, ?, ?, ?, ?)`,
+  );
+  for (const [order, fragment] of fragments.entries()) {
+    const id = fragmentId(source.documentId, order);
+    const mediaOrder = fragment.mediaItemIndex === null
+      ? null
+      : (output.mediaItems ?? [])
+          .slice(0, fragment.mediaItemIndex)
+          .filter((item) => item.groupBlockIndex === fragment.blockIndex).length;
+    insertFragment.run(
+      id,
+      source.documentId,
+      blockId(source.documentId, fragment.blockIndex),
+      mediaOrder === null
+        ? null
+        : `${blockId(source.documentId, fragment.blockIndex)}_m${mediaOrder}`,
+      order,
+      fragment.fragmentKind,
+      fragment.text,
+      fragment.textSha256,
+      fragment.groupAnchorBlockIndex === null
+        ? null
+        : blockId(source.documentId, fragment.groupAnchorBlockIndex),
+    );
+    fragment.ancestors.forEach((ancestor, depth) => {
+      insertAncestor.run(
+        id,
+        source.documentId,
+        depth,
+        blockId(source.documentId, ancestor.blockIndex),
+        ancestor.label,
+      );
+    });
   }
 }
 
@@ -537,6 +597,7 @@ export function parseStoredDocuments(
             parserVersion: null,
             evidenceJson,
             materializationStatus: "unparsed",
+            groupingPolicyVersion: null,
             outputHash: null,
             runId,
             updatedAt: changedAt,
@@ -570,17 +631,21 @@ export function parseStoredDocuments(
       };
       const existing = db
         .prepare(
-          `SELECT source_record_id, selection_state, parser_key, parser_version,
-                  materialization_status, output_sha256
-             FROM document_parse_state
-            WHERE document_id = ? AND source_adapter = ?`,
+          `SELECT state.source_record_id, source.body_sha256 AS source_sha256,
+                  state.selection_state, state.parser_key, state.parser_version,
+                  state.materialization_status, state.output_sha256,
+                  state.grouping_policy_version
+             FROM document_parse_state state
+             JOIN source_records source ON source.id = state.source_record_id
+            WHERE state.document_id = ? AND state.source_adapter = ?`,
         )
         .get(source.documentId, source.sourceAdapter) as ExistingParseState | undefined;
       const unchanged =
-        existing?.source_record_id === source.sourceRecordId &&
+        existing?.source_sha256 === source.bodySha256 &&
         existing.selection_state === "selected" &&
         existing.parser_key === selection.parserKey &&
         existing.parser_version === selection.parserVersion &&
+        existing.grouping_policy_version === GROUPING_POLICY_VERSION &&
         existing.materialization_status === "complete";
 
       if (unchanged) {
@@ -590,6 +655,7 @@ export function parseStoredDocuments(
           parserVersion: selection.parserVersion,
           evidenceJson,
           materializationStatus: "complete",
+          groupingPolicyVersion: GROUPING_POLICY_VERSION,
           outputHash: existing.output_sha256,
           runId,
           updatedAt: changedAt,
@@ -607,6 +673,7 @@ export function parseStoredDocuments(
         parserVersion: selection.parserVersion,
         evidenceJson,
         materializationStatus: "unparsed",
+        groupingPolicyVersion: GROUPING_POLICY_VERSION,
         outputHash: null,
         runId,
         updatedAt: changedAt,
@@ -614,15 +681,17 @@ export function parseStoredDocuments(
 
       const output = selection.parser.parse(source);
       validateOutput(source, output);
-      const hash = outputSha256(output);
+      const fragments = buildSearchFragments(output.blocks, output.mediaItems ?? []);
+      const hash = outputSha256(output, fragments);
       const persist = db.transaction(() => {
-        replaceCanonicalBlocks(db, source, output);
+        replaceCanonicalBlocks(db, source, output, fragments);
         persistSelectionState(db, source, {
           selectionState: "selected",
           parserKey: selection.parserKey,
           parserVersion: selection.parserVersion,
           evidenceJson,
           materializationStatus: output.status,
+          groupingPolicyVersion: GROUPING_POLICY_VERSION,
           outputHash: hash,
           runId,
           updatedAt: changedAt,
@@ -649,6 +718,7 @@ export function parseStoredDocuments(
           parserVersion: selectedForAttempt?.parserVersion ?? null,
           evidenceJson: selectedForAttempt?.evidenceJson ?? "[]",
           materializationStatus: hasSelectedParser ? "failed" : "unparsed",
+          groupingPolicyVersion: hasSelectedParser ? GROUPING_POLICY_VERSION : null,
           outputHash: null,
           runId,
           updatedAt: changedAt,

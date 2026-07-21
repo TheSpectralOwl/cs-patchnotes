@@ -122,7 +122,7 @@ function tagParts(raw: string): {
   let inner = raw.trim();
   const closing = inner.startsWith("/");
   if (closing) inner = inner.slice(1).trimStart();
-  const selfClosing = !closing && inner.endsWith("/");
+  const selfClosing = !closing && /\s\/$/.test(inner);
   if (selfClosing) inner = inner.slice(0, -1).trimEnd();
 
   const nameMatch = inner.match(/^(\*|[a-zA-Z][a-zA-Z0-9]*)/);
@@ -138,8 +138,19 @@ function tagParts(raw: string): {
   };
 }
 
-function looksLikeBracketHeading(raw: string): boolean {
-  return /^\s+[^\]=/]+?\s+$/.test(raw) && !/[a-z][a-z0-9_-]*\s*=/i.test(raw);
+function looksLikeBracketHeading(
+  inside: string,
+  source: string,
+  start: number,
+  end: number,
+): boolean {
+  if (/[a-z][a-z0-9_-]*\s*=/i.test(inside)) return false;
+  const trimmed = inside.trim();
+  if (RECOGNIZED_TAGS.has(trimmed.toLowerCase())) return false;
+  if (/^\s+[^\]=/]+?\s+$/.test(inside)) return true;
+  const startsLine = start === 0 || source[start - 1] === "\n" || source[start - 1] === "\r";
+  const endsLine = end === source.length || source[end] === "\n" || source[end] === "\r";
+  return startsLine && endsLine && /^[a-z][a-z0-9 _-]*$/i.test(trimmed);
 }
 
 /**
@@ -159,7 +170,7 @@ export function tokenizeSteamBbcode(raw: string): SteamTokenizeResult {
   const tokens: SteamToken[] = [];
   const diagnostics: ParseDiagnostic[] = [];
   let cursor = 0;
-  let depth = 0;
+  const openTags: string[] = [];
   let status: SteamTokenizeResult["status"] = "complete";
 
   const addDiagnostic = (code: string, sourceSpan: SourceSpan | null): void => {
@@ -194,6 +205,11 @@ export function tokenizeSteamBbcode(raw: string): SteamTokenizeResult {
     }
 
     if (raw[cursor] === "[") {
+      if (cursor > 0 && raw[cursor - 1] === "\\") {
+        if (!push({ type: "text", value: "[", sourceSpan: { start: cursor, end: cursor + 1 } })) break;
+        cursor += 1;
+        continue;
+      }
       const close = raw.indexOf("]", cursor + 1);
       if (close === -1) {
         push({
@@ -208,24 +224,34 @@ export function tokenizeSteamBbcode(raw: string): SteamTokenizeResult {
       }
 
       const inside = raw.slice(cursor + 1, close);
-      if (looksLikeBracketHeading(inside)) {
-        const end = close + 1;
+      const end = close + 1;
+      if (looksLikeBracketHeading(inside, raw, cursor, end)) {
+        if (!push({ type: "text", value: raw.slice(cursor, end), sourceSpan: { start: cursor, end } })) break;
+        cursor = end;
+        continue;
+      }
+      if (/^[A-Z0-9]{1,2}$/.test(inside)) {
         if (!push({ type: "text", value: raw.slice(cursor, end), sourceSpan: { start: cursor, end } })) break;
         cursor = end;
         continue;
       }
 
       const parts = tagParts(inside);
-      const end = close + 1;
       if (parts !== null && RECOGNIZED_TAGS.has(parts.name)) {
         if (!parts.closing && !parts.selfClosing) {
-          depth += 1;
-          if (depth > STEAM_MAX_NESTING_DEPTH) {
+          if (parts.name === "*") {
+            const openItem = openTags.lastIndexOf("*");
+            const openList = openTags.lastIndexOf("list");
+            if (openItem > openList) openTags.length = openItem;
+          }
+          openTags.push(parts.name);
+          if (openTags.length > STEAM_MAX_NESTING_DEPTH) {
             addDiagnostic("NESTING_LIMIT_EXCEEDED", { start: cursor, end });
             break;
           }
         } else if (parts.closing) {
-          depth = Math.max(0, depth - 1);
+          const matchingOpen = openTags.lastIndexOf(parts.name);
+          if (matchingOpen >= 0) openTags.length = matchingOpen;
         }
         if (!push({ type: "tag", ...parts, sourceSpan: { start: cursor, end } })) break;
       } else {

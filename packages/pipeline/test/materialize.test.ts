@@ -146,7 +146,7 @@ describe("parser-independent fragment policy", () => {
 describe("transactional canonical materialization", () => {
   test("persists deterministic IDs, group anchors, and ordered ancestor IDs without breadcrumb mutation", () => {
     const db = openDb(":memory:");
-    const documentId = seed(db, "policy", "POLICY");
+    const documentId = seed(db, "policy", "POLICY!");
     const canonical = parser("policy", "1.0.0", "POLICY", () => ({ status: "complete", blocks: POLICY_BLOCKS, mediaItems: POLICY_MEDIA, diagnostics: [] }));
 
     const summary = parseStoredDocuments(db, new ParserRegistry([canonical]), { runId: "materialize-policy", now: () => 10 });
@@ -166,9 +166,9 @@ describe("transactional canonical materialization", () => {
     expect(persisted.fragments.find((row) => row.text === "Widened connector")?.text).toBe("Widened connector");
     const detailId = persisted.fragments.find((row) => row.text === "Widened connector")!.id;
     expect(persisted.ancestors.filter((row) => row.fragment_id === detailId)).toEqual([
-      { fragment_id: detailId, depth: 0, ancestor_block_id: blockId(documentId, 0), label: "MAPS" },
-      { fragment_id: detailId, depth: 1, ancestor_block_id: blockId(documentId, 1), label: "Mirage" },
-      { fragment_id: detailId, depth: 2, ancestor_block_id: blockId(documentId, 2), label: "" },
+      { fragment_id: detailId, document_id: documentId, depth: 0, ancestor_block_id: blockId(documentId, 0), label: "MAPS" },
+      { fragment_id: detailId, document_id: documentId, depth: 1, ancestor_block_id: blockId(documentId, 1), label: "Mirage" },
+      { fragment_id: detailId, document_id: documentId, depth: 2, ancestor_block_id: blockId(documentId, 2), label: "" },
     ]);
     db.close();
   });
@@ -186,8 +186,16 @@ describe("transactional canonical materialization", () => {
       CREATE TEMP TABLE derived_writes (operation TEXT NOT NULL);
       CREATE TEMP TRIGGER count_block_insert AFTER INSERT ON blocks BEGIN INSERT INTO derived_writes VALUES ('block-insert'); END;
       CREATE TEMP TRIGGER count_block_delete AFTER DELETE ON blocks BEGIN INSERT INTO derived_writes VALUES ('block-delete'); END;
+      CREATE TEMP TRIGGER count_block_update AFTER UPDATE ON blocks BEGIN INSERT INTO derived_writes VALUES ('block-update'); END;
+      CREATE TEMP TRIGGER count_media_insert AFTER INSERT ON media_items BEGIN INSERT INTO derived_writes VALUES ('media-insert'); END;
+      CREATE TEMP TRIGGER count_media_delete AFTER DELETE ON media_items BEGIN INSERT INTO derived_writes VALUES ('media-delete'); END;
+      CREATE TEMP TRIGGER count_media_update AFTER UPDATE ON media_items BEGIN INSERT INTO derived_writes VALUES ('media-update'); END;
       CREATE TEMP TRIGGER count_fragment_insert AFTER INSERT ON search_fragments BEGIN INSERT INTO derived_writes VALUES ('fragment-insert'); END;
       CREATE TEMP TRIGGER count_fragment_delete AFTER DELETE ON search_fragments BEGIN INSERT INTO derived_writes VALUES ('fragment-delete'); END;
+      CREATE TEMP TRIGGER count_fragment_update AFTER UPDATE ON search_fragments BEGIN INSERT INTO derived_writes VALUES ('fragment-update'); END;
+      CREATE TEMP TRIGGER count_ancestor_insert AFTER INSERT ON fragment_ancestors BEGIN INSERT INTO derived_writes VALUES ('ancestor-insert'); END;
+      CREATE TEMP TRIGGER count_ancestor_delete AFTER DELETE ON fragment_ancestors BEGIN INSERT INTO derived_writes VALUES ('ancestor-delete'); END;
+      CREATE TEMP TRIGGER count_ancestor_update AFTER UPDATE ON fragment_ancestors BEGIN INSERT INTO derived_writes VALUES ('ancestor-update'); END;
     `);
 
     const summary = parseStoredDocuments(db, new ParserRegistry([stable]), { runId: "noop-second", now: () => 21 });
