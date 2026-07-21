@@ -15,17 +15,18 @@ import {
 } from "node:fs";
 import { dirname, posix } from "node:path";
 import {
+  BACKUP_MANIFEST_CONTRACT_VERSION,
+  CANONICAL_EXPANSION_META,
+  canonicalLegacySourceDigest,
+  EXPANSION_SCHEMA_VERSION,
   inspectSchemaVersion,
   LATEST_SCHEMA_VERSION,
+  migrateToVersion2,
+  readAndValidateBackupManifest,
+  recordCanonicalFinalizationReadiness,
   runMigrations,
+  type CanonicalBackupManifest,
 } from "@cs-patchnotes/shared";
-
-const MANIFEST_CONTRACT_VERSION = 1;
-const META_EXPANSION_ID = "canonical_expansion_id";
-const META_MANIFEST_DIGEST = "canonical_backup_manifest_sha256";
-const META_MANIFEST_PATH = "canonical_backup_manifest_path";
-const META_EXPANSION_CREATED_AT = "canonical_expansion_created_at";
-const META_SOURCE_DIGEST = "canonical_legacy_source_digest";
 
 const LEGACY_TABLES = ["updates", "sections", "lines", "line_tags"] as const;
 
@@ -47,19 +48,7 @@ interface BackupEvidence extends FileIdentity {
   sha256: string;
 }
 
-export interface CanonicalBackupManifest {
-  contract_version: number;
-  manifest_id: string;
-  expansion_id: string;
-  created_at: string;
-  target: TargetEvidence;
-  backup: BackupEvidence;
-  open_verification: {
-    ok: true;
-    user_version: number;
-    quick_check: "ok";
-  };
-}
+export type { CanonicalBackupManifest } from "@cs-patchnotes/shared";
 
 export interface CanonicalAuditReport {
   ok: boolean;
@@ -79,18 +68,21 @@ export interface CanonicalAuditReport {
 }
 
 interface ParsedMigrateArgs {
-  stage: "expand";
+  stage: "expand" | "finalize";
   apply: true;
   backupManifestPath: string;
 }
 
 interface ParsedAuditArgs {
   strict: true;
+  recordFinalizationReadiness: boolean;
+  backupManifestPath?: string;
 }
 
 export interface MigrationHooks {
   beforeBackupVerification?: (backupPath: string) => void;
   afterExpansion?: (db: DatabaseType) => void;
+  afterPrototypeDrop?: (db: DatabaseType) => void;
 }
 
 export interface MigrateCanonicalOptions {
@@ -158,13 +150,13 @@ export function parseMigrateCanonicalArgs(args: readonly string[]): ParsedMigrat
     }
   }
 
-  if (stage !== "expand") {
-    throw new Error("migrate-canonical requires --stage expand; finalization is unavailable");
+  if (stage !== "expand" && stage !== "finalize") {
+    throw new Error("migrate-canonical requires --stage expand or --stage finalize");
   }
   if (!apply) throw new Error("migrate-canonical requires the explicit --apply flag");
 
   return {
-    stage: "expand",
+    stage,
     apply: true,
     backupManifestPath: requireAbsolutePosixPath(
       backupManifestPath,
@@ -174,10 +166,40 @@ export function parseMigrateCanonicalArgs(args: readonly string[]): ParsedMigrat
 }
 
 export function parseAuditCanonicalArgs(args: readonly string[]): ParsedAuditArgs {
-  if (args.length !== 1 || args[0] !== "--strict") {
-    throw new Error("audit-canonical requires exactly --strict");
+  let strict = false;
+  let recordFinalizationReadiness = false;
+  let backupManifestPath: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--strict") {
+      if (strict) throw new Error("Duplicate --strict flag");
+      strict = true;
+    } else if (argument === "--record-finalization-readiness") {
+      if (recordFinalizationReadiness) {
+        throw new Error("Duplicate --record-finalization-readiness flag");
+      }
+      recordFinalizationReadiness = true;
+    } else if (argument === "--backup-manifest") {
+      if (backupManifestPath !== undefined || index + 1 >= args.length) {
+        throw new Error("--backup-manifest requires exactly one value");
+      }
+      backupManifestPath = args[++index];
+    } else {
+      throw new Error(`Unknown audit-canonical argument: ${argument}`);
+    }
   }
-  return { strict: true };
+  if (!strict) throw new Error("audit-canonical requires --strict");
+  if (recordFinalizationReadiness) {
+    return {
+      strict: true,
+      recordFinalizationReadiness: true,
+      backupManifestPath: requireAbsolutePosixPath(backupManifestPath, "--backup-manifest"),
+    };
+  }
+  if (backupManifestPath !== undefined) {
+    throw new Error("--backup-manifest is valid only when recording finalization readiness");
+  }
+  return { strict: true, recordFinalizationReadiness: false };
 }
 
 function sha256Bytes(value: Buffer | string): string {
@@ -216,21 +238,7 @@ function legacyTableCounts(
 }
 
 function legacySourceDigest(db: DatabaseType): string {
-  const rows = db
-    .prepare("SELECT id, raw_body FROM updates ORDER BY id")
-    .all() as Array<{ id: string; raw_body: string }>;
-  const hash = createHash("sha256");
-  for (const row of rows) {
-    const id = Buffer.from(row.id, "utf8");
-    const body = Buffer.from(row.raw_body, "utf8");
-    const lengths = Buffer.allocUnsafe(8);
-    lengths.writeUInt32BE(id.length, 0);
-    lengths.writeUInt32BE(body.length, 4);
-    hash.update(lengths);
-    hash.update(id);
-    hash.update(body);
-  }
-  return hash.digest("hex");
+  return canonicalLegacySourceDigest(db);
 }
 
 function targetEvidence(db: DatabaseType, path: string): TargetEvidence {
@@ -313,6 +321,10 @@ function setMeta(db: DatabaseType, key: string, value: string): void {
   ).run(key, value);
 }
 
+function tableExists(db: DatabaseType, name: string): boolean {
+  return (db.prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?").pluck().get(name) as number) === 1;
+}
+
 function auditDatabase(db: DatabaseType, targetPath: string): CanonicalAuditReport {
   const inspection = inspectSchemaVersion(db);
   const failures = new Map<string, number>();
@@ -320,13 +332,14 @@ function auditDatabase(db: DatabaseType, targetPath: string): CanonicalAuditRepo
     failures.set(code, (failures.get(code) ?? 0) + count);
   };
 
-  if (inspection.userVersion !== LATEST_SCHEMA_VERSION || inspection.state !== "transitional") {
+  if (inspection.state !== "transitional" && inspection.state !== "canonical") {
     fail("SCHEMA_VERSION");
   }
+  const transitional = inspection.state === "transitional";
 
   const counts = {
-    legacy_updates: countTable(db, "updates"),
-    legacy_line_tags: countTable(db, "line_tags"),
+    legacy_updates: tableExists(db, "updates") ? countTable(db, "updates") : 0,
+    legacy_line_tags: tableExists(db, "line_tags") ? countTable(db, "line_tags") : 0,
     documents: db.prepare("SELECT count(*) FROM documents").pluck().get() as number,
     gid_aliases: db
       .prepare("SELECT count(*) FROM external_identifiers WHERE namespace='steam_news_gid'")
@@ -347,62 +360,78 @@ function auditDatabase(db: DatabaseType, targetPath: string): CanonicalAuditRepo
   };
 
   if (counts.legacy_line_tags !== 0) fail("LEGACY_CLASSIFICATION_ROWS", counts.legacy_line_tags);
-  if (counts.documents !== counts.legacy_updates) fail("DOCUMENT_COUNT");
-  if (counts.gid_aliases !== counts.legacy_updates) fail("GID_ALIAS_COUNT");
-  if (counts.publisher_locators !== counts.legacy_updates) fail("PUBLISHER_LOCATOR_COUNT");
-  if (counts.current_source_heads !== counts.legacy_updates) fail("CURRENT_HEAD_COUNT");
-  if (counts.source_revisions < counts.legacy_updates) fail("SOURCE_REVISION_COUNT");
+  if (transitional) {
+    if (counts.documents !== counts.legacy_updates) fail("DOCUMENT_COUNT");
+    if (counts.gid_aliases !== counts.legacy_updates) fail("GID_ALIAS_COUNT");
+    if (counts.publisher_locators !== counts.legacy_updates) fail("PUBLISHER_LOCATOR_COUNT");
+    if (counts.current_source_heads !== counts.legacy_updates) fail("CURRENT_HEAD_COUNT");
+    if (counts.source_revisions < counts.legacy_updates) fail("SOURCE_REVISION_COUNT");
 
-  const rows = db
-    .prepare(
-      `SELECT legacy.id AS gid,
-              legacy.raw_body,
-              legacy.url,
-              identifier.document_id,
-              document.content_kind,
-              head.source_record_id,
-              source.pristine_body,
-              source.body_sha256,
-              (SELECT count(*)
-                 FROM source_locators locator
-                WHERE locator.document_id = identifier.document_id
-                  AND locator.namespace = 'steam_news_url'
-                  AND locator.locator = legacy.url) AS locator_count
-         FROM updates legacy
-         LEFT JOIN external_identifiers identifier
-           ON identifier.namespace = 'steam_news_gid' AND identifier.value = legacy.id
-         LEFT JOIN documents document ON document.id = identifier.document_id
-         LEFT JOIN document_source_heads head
-           ON head.document_id = identifier.document_id AND head.source_adapter = 'steam_news'
-         LEFT JOIN source_records source
-           ON source.id = head.source_record_id
-          AND source.document_id = head.document_id
-          AND source.source_adapter = head.source_adapter
-        ORDER BY legacy.id`,
-    )
-    .all() as LegacyUpdateParityRow[];
+    const rows = db
+      .prepare(
+        `SELECT legacy.id AS gid,
+                legacy.raw_body,
+                legacy.url,
+                identifier.document_id,
+                document.content_kind,
+                head.source_record_id,
+                source.pristine_body,
+                source.body_sha256,
+                (SELECT count(*)
+                   FROM source_locators locator
+                  WHERE locator.document_id = identifier.document_id
+                    AND locator.namespace = 'steam_news_url'
+                    AND locator.locator = legacy.url) AS locator_count
+           FROM updates legacy
+           LEFT JOIN external_identifiers identifier
+             ON identifier.namespace = 'steam_news_gid' AND identifier.value = legacy.id
+           LEFT JOIN documents document ON document.id = identifier.document_id
+           LEFT JOIN document_source_heads head
+             ON head.document_id = identifier.document_id AND head.source_adapter = 'steam_news'
+           LEFT JOIN source_records source
+             ON source.id = head.source_record_id
+            AND source.document_id = head.document_id
+            AND source.source_adapter = head.source_adapter
+          ORDER BY legacy.id`,
+      )
+      .all() as LegacyUpdateParityRow[];
 
-  for (const row of rows) {
-    if (row.document_id === null || row.content_kind !== "patch_notes") fail("IDENTITY_PARITY");
-    if (row.source_record_id === null || row.pristine_body === null) {
-      fail("CURRENT_SOURCE_PARITY");
-    } else if (
-      row.pristine_body !== row.raw_body ||
-      row.body_sha256 !== sha256Bytes(Buffer.from(row.raw_body, "utf8"))
-    ) {
-      fail("CURRENT_SOURCE_PARITY");
+    for (const row of rows) {
+      if (row.document_id === null || row.content_kind !== "patch_notes") fail("IDENTITY_PARITY");
+      if (row.source_record_id === null || row.pristine_body === null) {
+        fail("CURRENT_SOURCE_PARITY");
+      } else if (
+        row.pristine_body !== row.raw_body ||
+        row.body_sha256 !== sha256Bytes(Buffer.from(row.raw_body, "utf8"))
+      ) {
+        fail("CURRENT_SOURCE_PARITY");
+      }
+      if (row.url !== null && row.url.length > 0 && row.locator_count !== 1) {
+        fail("LOCATOR_PARITY");
+      }
     }
-    if (row.url !== null && row.url.length > 0 && row.locator_count !== 1) {
-      fail("LOCATOR_PARITY");
+  } else if (
+    inspection.userVersion !== LATEST_SCHEMA_VERSION ||
+    LEGACY_TABLES.some((name) => tableExists(db, name))
+  ) {
+    fail("CANONICAL_ONLY_SCHEMA");
+  }
+
+  const invalidSourceHashes = db
+    .prepare("SELECT pristine_body, body_sha256 FROM source_records")
+    .all() as Array<{ pristine_body: string; body_sha256: string }>;
+  for (const source of invalidSourceHashes) {
+    if (sha256Bytes(Buffer.from(source.pristine_body, "utf8")) !== source.body_sha256) {
+      fail("SOURCE_BODY_HASH");
     }
   }
 
   const foreignKeyFailures = db.pragma("foreign_key_check") as unknown[];
   if (foreignKeyFailures.length > 0) fail("FOREIGN_KEY_CHECK", foreignKeyFailures.length);
 
-  const sourceDigest = legacySourceDigest(db);
-  const recordedDigest = getMeta(db, META_SOURCE_DIGEST);
-  if (recordedDigest !== undefined && recordedDigest !== sourceDigest) fail("SOURCE_DIGEST_DRIFT");
+  const recordedDigest = getMeta(db, CANONICAL_EXPANSION_META.sourceDigest);
+  const sourceDigest = transitional ? legacySourceDigest(db) : (recordedDigest ?? "");
+  if (transitional && recordedDigest !== undefined && recordedDigest !== sourceDigest) fail("SOURCE_DIGEST_DRIFT");
 
   return {
     ok: failures.size === 0,
@@ -417,7 +446,7 @@ function auditDatabase(db: DatabaseType, targetPath: string): CanonicalAuditRepo
 function parseManifest(bytes: Buffer): CanonicalBackupManifest {
   const manifest = JSON.parse(bytes.toString("utf8")) as CanonicalBackupManifest;
   if (
-    manifest.contract_version !== MANIFEST_CONTRACT_VERSION ||
+    manifest.contract_version !== BACKUP_MANIFEST_CONTRACT_VERSION ||
     typeof manifest.manifest_id !== "string" ||
     typeof manifest.expansion_id !== "string" ||
     typeof manifest.target?.path !== "string" ||
@@ -447,16 +476,16 @@ function verifyRetryEvidence(
   if (verification.user_version !== manifest.open_verification.user_version) {
     throw new Error("Manifest backup schema identity mismatch");
   }
-  if (getMeta(db, META_EXPANSION_ID) !== manifest.expansion_id) {
+  if (getMeta(db, CANONICAL_EXPANSION_META.expansionId) !== manifest.expansion_id) {
     throw new Error("Database expansion identity does not match explicit manifest");
   }
-  if (getMeta(db, META_MANIFEST_DIGEST) !== sha256Bytes(manifestBytes)) {
+  if (getMeta(db, CANONICAL_EXPANSION_META.manifestDigest) !== sha256Bytes(manifestBytes)) {
     throw new Error("Database manifest digest does not match explicit manifest");
   }
-  if (getMeta(db, META_MANIFEST_PATH) !== manifestPath) {
+  if (getMeta(db, CANONICAL_EXPANSION_META.manifestPath) !== manifestPath) {
     throw new Error("Database manifest path does not match explicit manifest");
   }
-  if (getMeta(db, META_SOURCE_DIGEST) !== manifest.target.legacy_source_digest) {
+  if (getMeta(db, CANONICAL_EXPANSION_META.sourceDigest) !== manifest.target.legacy_source_digest) {
     throw new Error("Database source digest does not match explicit manifest");
   }
   return { manifest, manifestBytes };
@@ -484,6 +513,46 @@ export async function runMigrateCanonical(
   db.pragma("foreign_keys = ON");
   try {
     const inspection = inspectSchemaVersion(db);
+    if (args.stage === "finalize") {
+      if (inspection.state === "canonical") {
+        const manifestPath = getMeta(db, CANONICAL_EXPANSION_META.manifestPath);
+        if (manifestPath !== args.backupManifestPath) {
+          throw new Error("Finalized database does not match the explicit backup manifest path");
+        }
+        const report: MigrateCanonicalReport = {
+          ok: true,
+          target_path: targetPath,
+          manifest_path: args.backupManifestPath,
+          expansion_id: getMeta(db, CANONICAL_EXPANSION_META.expansionId) ?? "",
+          source_digest: getMeta(db, CANONICAL_EXPANSION_META.sourceDigest) ?? "",
+          retry: true,
+        };
+        if (cliInvocation) console.log(JSON.stringify(report));
+        return report;
+      }
+      if (inspection.state !== "transitional") {
+        throw new Error("Canonical finalization requires transitional schema version 1");
+      }
+      const evidence = readAndValidateBackupManifest(
+        args.backupManifestPath,
+        targetPath,
+        db,
+      );
+      migrateToVersion2(db, evidence, {
+        afterPrototypeDrop: options.hooks?.afterPrototypeDrop,
+      });
+      const report: MigrateCanonicalReport = {
+        ok: true,
+        target_path: targetPath,
+        manifest_path: evidence.manifestPath,
+        expansion_id: evidence.expansionId,
+        source_digest: evidence.sourceDigest,
+        retry: false,
+      };
+      if (cliInvocation) console.log(JSON.stringify(report));
+      return report;
+    }
+
     if (inspection.state === "transitional") {
       const { manifest } = verifyRetryEvidence(db, targetPath, manifestPath);
       const audit = auditDatabase(db, targetPath);
@@ -530,7 +599,7 @@ export async function runMigrateCanonical(
     }
 
     const manifest: CanonicalBackupManifest = {
-      contract_version: MANIFEST_CONTRACT_VERSION,
+      contract_version: BACKUP_MANIFEST_CONTRACT_VERSION,
       manifest_id: randomUUID(),
       expansion_id: randomUUID(),
       created_at: new Date().toISOString(),
@@ -549,11 +618,11 @@ export async function runMigrateCanonical(
       options.hooks?.afterExpansion?.(db);
       const parity = auditDatabase(db, targetPath);
       if (!parity.ok) throw new Error(`Canonical expansion parity failed: ${JSON.stringify(parity.failures)}`);
-      setMeta(db, META_EXPANSION_ID, manifest.expansion_id);
-      setMeta(db, META_MANIFEST_DIGEST, sha256Bytes(manifestBytes));
-      setMeta(db, META_MANIFEST_PATH, manifestPath);
-      setMeta(db, META_EXPANSION_CREATED_AT, manifest.created_at);
-      setMeta(db, META_SOURCE_DIGEST, target.legacy_source_digest);
+      setMeta(db, CANONICAL_EXPANSION_META.expansionId, manifest.expansion_id);
+      setMeta(db, CANONICAL_EXPANSION_META.manifestDigest, sha256Bytes(manifestBytes));
+      setMeta(db, CANONICAL_EXPANSION_META.manifestPath, manifestPath);
+      setMeta(db, CANONICAL_EXPANSION_META.expansionCreatedAt, manifest.created_at);
+      setMeta(db, CANONICAL_EXPANSION_META.sourceDigest, target.legacy_source_digest);
     });
     expand();
 
@@ -576,15 +645,27 @@ export async function runAuditCanonical(
   options: AuditCanonicalOptions = {},
 ): Promise<CanonicalAuditReport> {
   const cliInvocation = arguments.length === 0;
-  parseAuditCanonicalArgs(options.args ?? process.argv.slice(3));
+  const args = parseAuditCanonicalArgs(options.args ?? process.argv.slice(3));
   const targetPath = requireAbsolutePosixPath(
     options.sqlitePath ?? process.env.SQLITE_PATH,
     "SQLITE_PATH",
   );
-  const db = new Database(targetPath, { readonly: true, fileMustExist: true });
+  const db = new Database(targetPath, {
+    readonly: !args.recordFinalizationReadiness,
+    fileMustExist: true,
+  });
+  if (args.recordFinalizationReadiness) db.pragma("foreign_keys = ON");
   try {
     const report = auditDatabase(db, targetPath);
     if (!report.ok) throw new Error(`Strict canonical audit failed: ${JSON.stringify(report)}`);
+    if (args.recordFinalizationReadiness) {
+      const evidence = readAndValidateBackupManifest(
+        args.backupManifestPath!,
+        targetPath,
+        db,
+      );
+      recordCanonicalFinalizationReadiness(db, evidence);
+    }
     if (cliInvocation) console.log(JSON.stringify(report));
     return report;
   } finally {

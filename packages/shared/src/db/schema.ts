@@ -57,6 +57,8 @@ CREATE INDEX IF NOT EXISTS idx_tags_line    ON line_tags(line_id);
  * parser selection and derived output have separate ownership and lifecycles.
  */
 export const CANONICAL_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
 CREATE TABLE IF NOT EXISTS documents (
   id           TEXT PRIMARY KEY,
   content_kind TEXT NOT NULL CHECK (content_kind IN ('patch_notes', 'release_article', 'announcement')),
@@ -192,10 +194,14 @@ CREATE TABLE IF NOT EXISTS parse_diagnostics (
 
 CREATE TABLE IF NOT EXISTS canonical_cutover_audits (
   id                       TEXT PRIMARY KEY,
+  manifest_path            TEXT NOT NULL CHECK (length(manifest_path) > 0),
   manifest_digest          TEXT NOT NULL CHECK (length(manifest_digest) = 64),
+  expansion_id             TEXT NOT NULL CHECK (length(expansion_id) > 0),
   source_head_digest       TEXT NOT NULL CHECK (length(source_head_digest) = 64),
+  parser_state_digest      TEXT NOT NULL CHECK (length(parser_state_digest) = 64),
   successful_parse_run_id  TEXT NOT NULL REFERENCES parse_runs(id),
   noop_parse_run_id        TEXT NOT NULL REFERENCES parse_runs(id),
+  noop_state_digest        TEXT NOT NULL CHECK (length(noop_state_digest) = 64),
   backup_path              TEXT NOT NULL CHECK (length(backup_path) > 0),
   backup_sha256            TEXT NOT NULL CHECK (length(backup_sha256) = 64),
   recorded_at              INTEGER NOT NULL
@@ -406,5 +412,8 @@ CREATE INDEX IF NOT EXISTS idx_fragments_document_order ON search_fragments(docu
 CREATE INDEX IF NOT EXISTS idx_fragment_ancestors_block ON fragment_ancestors(ancestor_block_id);
 `;
 
-/** Fresh databases deliberately contain both models during the transition. */
-export const SCHEMA_SQL = `${PROTOTYPE_SCHEMA_SQL}\n${CANONICAL_SCHEMA_SQL}`;
+/** Additive expansion deliberately contains both models at schema version 1. */
+export const TRANSITIONAL_SCHEMA_SQL = `${PROTOTYPE_SCHEMA_SQL}\n${CANONICAL_SCHEMA_SQL}`;
+
+/** Fresh schema version 2 databases contain canonical relations only. */
+export const SCHEMA_SQL = CANONICAL_SCHEMA_SQL;

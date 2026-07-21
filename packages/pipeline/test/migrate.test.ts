@@ -583,6 +583,29 @@ describe("guarded canonical-only finalization", () => {
           open_verification: { ...manifest.open_verification, user_version: 99 },
         }),
       },
+      {
+        name: "backup open or quick-check failure",
+        mutate: (manifest, manifestPath) => {
+          writeFileSync(manifest.backup.path, "not a sqlite database", "utf8");
+          const stat = statSync(manifest.backup.path);
+          writeManifest(manifestPath, {
+            ...manifest,
+            backup: {
+              ...manifest.backup,
+              device: stat.dev,
+              inode: stat.ino,
+              size: stat.size,
+              mtime_ms: stat.mtimeMs,
+              sha256: sha256(readFileSync(manifest.backup.path)),
+            },
+          });
+          const db = new Database(manifest.target.path);
+          db.prepare(
+            "UPDATE meta SET value=? WHERE key='canonical_backup_manifest_sha256'",
+          ).run(sha256(readFileSync(manifestPath)));
+          db.close();
+        },
+      },
     ];
 
     for (const invalid of cases) {
