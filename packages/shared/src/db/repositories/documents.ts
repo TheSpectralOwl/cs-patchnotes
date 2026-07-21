@@ -191,7 +191,14 @@ export function upsertSteamSourceRecord(
         .get(sourceRecordId) as SourceRecordRow;
     }
 
-    if (currentSource?.id !== sourceRecord.id) {
+    // Move the head forward only when this call appended genuinely new bytes,
+    // or when the received body already is the current head (a stable no-op).
+    // Receiving a previously-seen, now non-current body must NOT rewind the
+    // authoritative head: the head defines parser input and is append-only.
+    // Deliberately re-selecting an older historical revision is reserved for a
+    // separate, explicitly audited rollback operation that is not performed here.
+    const receivedIsCurrentHead = currentSource?.id === sourceRecord.id;
+    if (createdSourceRecord || receivedIsCurrentHead) {
       db.prepare(
         `INSERT INTO document_source_heads
            (document_id, source_adapter, source_record_id, updated_at)
