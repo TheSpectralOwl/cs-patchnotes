@@ -88,6 +88,13 @@ function seedCanonicalDb(): Database {
   const db = openDb(":memory:");
   insertDocument(db, "doc-a", "Authoritative Alpha", 200);
   insertDocument(db, "doc-b", "Authoritative Beta", 200);
+  insertDocument(db, "frag-heading", "Identifier collision sentinel", 100);
+  db.prepare(
+    `INSERT INTO documents
+       (id, content_kind, title, posted_at, game, channel, parse_status)
+     VALUES ('doc-supplemental', 'release_article', 'Supplemental article', 300,
+             'cs2', 'mainline', 'parsed')`,
+  ).run();
 
   insertBlock(db, {
     id: "a-heading",
@@ -97,6 +104,14 @@ function seedCanonicalDb(): Database {
     siblingOrder: 0,
     text: "Maps",
     label: "Maps",
+  });
+  insertBlock(db, {
+    id: "supplemental-change",
+    documentId: "doc-supplemental",
+    kind: "patch_change",
+    preorder: 0,
+    siblingOrder: 0,
+    text: "Supplemental text",
   });
   insertBlock(db, {
     id: "a-change-1",
@@ -179,6 +194,13 @@ function seedCanonicalDb(): Database {
     blockId: "b-change",
     order: 0,
     text: "Authoritative beta change",
+  });
+  insertFragment(db, {
+    id: "frag-supplemental",
+    documentId: "doc-supplemental",
+    blockId: "supplemental-change",
+    order: 0,
+    text: "Supplemental text",
   });
   return db;
 }
@@ -458,6 +480,31 @@ describe("bounded SQLite hydration", () => {
     expect(serialized).not.toContain("raw-parser-diagnostic");
     expect(serialized).not.toContain("mystery-tag-with-private-payload");
     expect(serialized).not.toContain("pristine_body");
+  });
+
+  test("bounds subgroup expansion and reports omitted canonical descendants", () => {
+    const result = hydrateRankedFragments(
+      db,
+      [{ kind: "subgroup", group_anchor_block_id: "a-heading", rank: 0 }],
+      { max_context_blocks: 2 },
+    );
+    expect(result.matches[0]?.context.blocks.map((block) => block.id)).toEqual([
+      "a-heading",
+      "a-change-1",
+    ]);
+    expect(result.matches[0]?.context.descendant_overflow).toBe(3);
+  });
+
+  test("drops non-heading subgroup anchors, direct headings, and supplemental documents", () => {
+    const requests: RankedHydrationRequest[] = [
+      { kind: "subgroup", group_anchor_block_id: "a-change-1", rank: 0 },
+      { kind: "direct", fragment_id: "frag-heading", rank: 1 },
+      { kind: "document", document_id: "doc-supplemental", rank: 2 },
+      { kind: "direct", fragment_id: "frag-supplemental", rank: 3 },
+    ];
+    const result = hydrateRankedFragments(db, requests);
+    expect(result.matches).toEqual([]);
+    expect(result.missing).toEqual(requests);
   });
 
   test("deduplicates each request key at its independently retained first rank", () => {

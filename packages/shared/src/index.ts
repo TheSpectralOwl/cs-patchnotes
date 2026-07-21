@@ -24,6 +24,7 @@ export * from "./types.js";
 export * from "./search.js";
 export * from "./db/ids.js";
 export * from "./db/repositories/documents.js";
+export * from "./db/repositories/hydration.js";
 export {
   inspectSchemaVersion,
   LATEST_SCHEMA_VERSION,
