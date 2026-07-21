@@ -10,10 +10,12 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { initializeCanonicalSchema } from "@cs-patchnotes/shared";
 import { COMMANDS, main } from "../src/cli.js";
 import {
   parseAuditCanonicalArgs,
@@ -22,6 +24,7 @@ import {
   runMigrateCanonical,
   type CanonicalBackupManifest,
 } from "../src/migrate.js";
+import { runParse } from "../src/parse.js";
 
 const temporaryDirectories: string[] = [];
 const openDatabases: DatabaseType[] = [];
@@ -135,6 +138,104 @@ function snapshotLegacy(path: string): unknown {
   };
   db.close();
   return snapshot;
+}
+
+function snapshotProtectedState(path: string): unknown {
+  const db = new Database(path, { readonly: true });
+  const prototypeTables = ["updates", "sections", "lines", "line_tags"];
+  const snapshot = {
+    version: db.pragma("user_version", { simple: true }),
+    prototypeDefinitions: db
+      .prepare(
+        `SELECT type, name, sql
+           FROM sqlite_master
+          WHERE name IN ('updates', 'sections', 'lines', 'line_tags')
+          ORDER BY type, name`,
+      )
+      .all(),
+    prototypeRows: Object.fromEntries(
+      prototypeTables.map((table) => [
+        table,
+        db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+      ]),
+    ),
+    canonicalCounts: Object.fromEntries(
+      [
+        "documents",
+        "source_records",
+        "document_source_heads",
+        "external_identifiers",
+        "source_locators",
+        "document_parse_state",
+        "parse_runs",
+        "blocks",
+        "search_fragments",
+        "fragment_tags",
+        "canonical_cutover_audits",
+      ].map((table) => [
+        table,
+        db.prepare(`SELECT count(*) FROM ${table}`).pluck().get(),
+      ]),
+    ),
+    sourceHashes: db
+      .prepare(
+        `SELECT id, pristine_body, body_sha256
+           FROM source_records
+          ORDER BY id`,
+      )
+      .all(),
+  };
+  db.close();
+  return snapshot;
+}
+
+function readManifest(path: string): CanonicalBackupManifest {
+  return JSON.parse(readFileSync(path, "utf8")) as CanonicalBackupManifest;
+}
+
+function writeManifest(path: string, manifest: unknown): void {
+  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+}
+
+async function expandAndParseTwice(count = 2): Promise<{
+  directory: string;
+  target: string;
+  manifest: string;
+  bodies: Map<string, string>;
+}> {
+  const paths = makePaths();
+  const bodies = seedLegacyDatabase(paths.target, count);
+  await runMigrateCanonical({
+    sqlitePath: paths.target,
+    approvedTargetPath: paths.target,
+    args: ["--stage", "expand", "--apply", "--backup-manifest", paths.manifest],
+  });
+  const db = new Database(paths.target);
+  db.pragma("foreign_keys = ON");
+  await runParse({ db, runId: "first-complete-parse", now: () => 1_700_200_000 });
+  await runParse({ db, runId: "second-noop-parse", now: () => 1_700_200_100 });
+  db.close();
+  return { ...paths, bodies };
+}
+
+async function recordReadiness(target: string, manifest: string): Promise<void> {
+  await runAuditCanonical({
+    sqlitePath: target,
+    args: [
+      "--strict",
+      "--record-finalization-readiness",
+      "--backup-manifest",
+      manifest,
+    ],
+  });
+}
+
+async function finalize(target: string, manifest: string): Promise<void> {
+  await runMigrateCanonical({
+    sqlitePath: target,
+    approvedTargetPath: target,
+    args: ["--stage", "finalize", "--apply", "--backup-manifest", manifest],
+  });
 }
 
 function canonicalCounts(db: DatabaseType): Record<string, number> {
@@ -404,7 +505,323 @@ describe("canonical expansion and audit", () => {
   });
 });
 
-test("CLI registry exposes only expansion and strict audit contracts", async () => {
+describe("guarded canonical-only finalization", () => {
+  test("requires one exact fresh closed manifest and never infers a newer sibling", async () => {
+    const cases: Array<{
+      name: string;
+      mutate: (manifest: CanonicalBackupManifest, manifestPath: string) => void;
+    }> = [
+      {
+        name: "malformed JSON",
+        mutate: (_manifest, manifestPath) => writeFileSync(manifestPath, "{", "utf8"),
+      },
+      {
+        name: "extra manifest field",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, { ...manifest, unexpected: true }),
+      },
+      {
+        name: "wrong contract version",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, { ...manifest, contract_version: 99 }),
+      },
+      {
+        name: "expired creation time",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, { ...manifest, created_at: "2000-01-01T00:00:00.000Z" }),
+      },
+      {
+        name: "target path mismatch",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, {
+          ...manifest,
+          target: { ...manifest.target, path: `${manifest.target.path}.substituted` },
+        }),
+      },
+      {
+        name: "target stat mismatch",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, {
+          ...manifest,
+          target: { ...manifest.target, size: manifest.target.size + 1 },
+        }),
+      },
+      {
+        name: "source digest mismatch",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, {
+          ...manifest,
+          target: { ...manifest.target, legacy_source_digest: "f".repeat(64) },
+        }),
+      },
+      {
+        name: "expansion identity mismatch",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, {
+          ...manifest,
+          expansion_id: "00000000-0000-4000-8000-000000000000",
+        }),
+      },
+      {
+        name: "backup path mismatch",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, {
+          ...manifest,
+          backup: { ...manifest.backup, path: `${manifest.backup.path}.substituted` },
+        }),
+      },
+      {
+        name: "backup hash mismatch",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, {
+          ...manifest,
+          backup: { ...manifest.backup, sha256: "f".repeat(64) },
+        }),
+      },
+      {
+        name: "backup stat mismatch",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, {
+          ...manifest,
+          backup: { ...manifest.backup, size: manifest.backup.size + 1 },
+        }),
+      },
+      {
+        name: "open verification mismatch",
+        mutate: (manifest, manifestPath) => writeManifest(manifestPath, {
+          ...manifest,
+          open_verification: { ...manifest.open_verification, user_version: 99 },
+        }),
+      },
+    ];
+
+    for (const invalid of cases) {
+      const { target, manifest } = await expandAndParseTwice(1);
+      const evidence = readManifest(manifest);
+      invalid.mutate(evidence, manifest);
+      const before = snapshotProtectedState(target);
+
+      await expect(recordReadiness(target, manifest), invalid.name).rejects.toThrow();
+      expect(snapshotProtectedState(target), invalid.name).toEqual(before);
+    }
+
+    const missing = await expandAndParseTwice(1);
+    const namedBytes = readFileSync(missing.manifest);
+    const siblingManifest = join(missing.directory, "newer sibling evidence.json");
+    writeFileSync(siblingManifest, namedBytes);
+    writeFileSync(`${siblingManifest}.sqlite-backup`, readFileSync(`${missing.manifest}.sqlite-backup`));
+    rmSync(missing.manifest);
+    const beforeMissing = snapshotProtectedState(missing.target);
+    await expect(recordReadiness(missing.target, missing.manifest)).rejects.toThrow();
+    expect(snapshotProtectedState(missing.target)).toEqual(beforeMissing);
+
+    const relative = await expandAndParseTwice(1);
+    const beforeRelative = snapshotProtectedState(relative.target);
+    await expect(
+      runAuditCanonical({
+        sqlitePath: relative.target,
+        args: ["--strict", "--record-finalization-readiness", "--backup-manifest", "relative.json"],
+      }),
+    ).rejects.toThrow(/absolute/i);
+    expect(snapshotProtectedState(relative.target)).toEqual(beforeRelative);
+  });
+
+  test("refuses every incomplete or stale readiness state without changing protected rows", async () => {
+    const immediate = makePaths();
+    seedLegacyDatabase(immediate.target, 1);
+    await runMigrateCanonical({
+      sqlitePath: immediate.target,
+      approvedTargetPath: immediate.target,
+      args: ["--stage", "expand", "--apply", "--backup-manifest", immediate.manifest],
+    });
+    const immediateBefore = snapshotProtectedState(immediate.target);
+    await expect(finalize(immediate.target, immediate.manifest)).rejects.toThrow();
+    expect(snapshotProtectedState(immediate.target)).toEqual(immediateBefore);
+
+    const onePass = makePaths();
+    seedLegacyDatabase(onePass.target, 1);
+    await runMigrateCanonical({
+      sqlitePath: onePass.target,
+      approvedTargetPath: onePass.target,
+      args: ["--stage", "expand", "--apply", "--backup-manifest", onePass.manifest],
+    });
+    const onePassDb = new Database(onePass.target);
+    await runParse({ db: onePassDb, runId: "only-parse", now: () => 1_700_300_000 });
+    onePassDb.close();
+    const onePassBefore = snapshotProtectedState(onePass.target);
+    await expect(recordReadiness(onePass.target, onePass.manifest)).rejects.toThrow(/no-op|unchanged|readiness/i);
+    expect(snapshotProtectedState(onePass.target)).toEqual(onePassBefore);
+
+    const unrecorded = await expandAndParseTwice(1);
+    const unrecordedBefore = snapshotProtectedState(unrecorded.target);
+    await expect(finalize(unrecorded.target, unrecorded.manifest)).rejects.toThrow(/readiness/i);
+    expect(snapshotProtectedState(unrecorded.target)).toEqual(unrecordedBefore);
+
+    const drifts: Array<{
+      name: string;
+      mutate: (db: DatabaseType, manifestPath: string) => void;
+    }> = [
+      {
+        name: "legacy body",
+        mutate: (db) => db.prepare("UPDATE updates SET raw_body = raw_body || ' stale'").run(),
+      },
+      {
+        name: "GID alias",
+        mutate: (db) => db.prepare("DELETE FROM external_identifiers WHERE namespace='steam_news_gid'").run(),
+      },
+      {
+        name: "publisher locator",
+        mutate: (db) => db.prepare("DELETE FROM source_locators WHERE namespace='steam_news_url'").run(),
+      },
+      {
+        name: "source head",
+        mutate: (db) => {
+          const row = db.prepare(
+            `SELECT head.document_id, head.source_record_id, source.pristine_body
+               FROM document_source_heads head
+               JOIN source_records source ON source.id = head.source_record_id
+              LIMIT 1`,
+          ).get() as { document_id: string; source_record_id: string; pristine_body: string };
+          const body = `${row.pristine_body} changed`;
+          db.prepare(
+            `INSERT INTO source_records
+               (id, document_id, source_adapter, body_format, pristine_body, body_sha256,
+                fetched_at, supersedes_source_record_id)
+             VALUES ('stale-source-head', ?, 'steam_news', 'bbcode', ?, ?, 9, ?)`,
+          ).run(row.document_id, body, sha256(body), row.source_record_id);
+          db.prepare(
+            `UPDATE document_source_heads
+                SET source_record_id='stale-source-head', updated_at=9
+              WHERE document_id=? AND source_adapter='steam_news'`,
+          ).run(row.document_id);
+        },
+      },
+      {
+        name: "parser assignment",
+        mutate: (db) => db.prepare("UPDATE document_parse_state SET parser_version='stale'").run(),
+      },
+      {
+        name: "quarantine state",
+        mutate: (db) => {
+          db.prepare(
+            `UPDATE document_parse_state
+                SET selection_state='quarantined_zero_match', parser_key=NULL, parser_version=NULL,
+                    materialization_status='unparsed'`,
+          ).run();
+          db.prepare("UPDATE documents SET parse_status='quarantined'").run();
+        },
+      },
+      {
+        name: "partial state",
+        mutate: (db) => {
+          db.prepare("UPDATE document_parse_state SET materialization_status='partial'").run();
+          db.prepare("UPDATE documents SET parse_status='partial'").run();
+        },
+      },
+      {
+        name: "nonzero canonical tag",
+        mutate: (db) => {
+          const fragment = db.prepare("SELECT id FROM search_fragments LIMIT 1").pluck().get() as string;
+          db.prepare(
+            "INSERT INTO fragment_tags (fragment_id, kind, value, source) VALUES (?, 'category', 'stale', 'test')",
+          ).run(fragment);
+        },
+      },
+      {
+        name: "foreign key violation",
+        mutate: (db) => {
+          db.pragma("foreign_keys = OFF");
+          db.prepare(
+            `INSERT INTO source_locators
+               (id, document_id, namespace, locator, locator_kind, created_at)
+             VALUES ('orphan-locator', 'missing-document', 'test', 'orphan', 'publisher', 1)`,
+          ).run();
+        },
+      },
+      {
+        name: "no-op run",
+        mutate: (db) => db.prepare("UPDATE parse_runs SET status='failed' WHERE id='second-noop-parse'").run(),
+      },
+      {
+        name: "missing backup",
+        mutate: (_db, manifestPath) => rmSync(`${manifestPath}.sqlite-backup`),
+      },
+      {
+        name: "stale manifest",
+        mutate: (_db, manifestPath) => {
+          const manifest = readManifest(manifestPath);
+          writeManifest(manifestPath, { ...manifest, created_at: "2000-01-01T00:00:00.000Z" });
+        },
+      },
+    ];
+
+    for (const drift of drifts) {
+      const ready = await expandAndParseTwice(1);
+      await recordReadiness(ready.target, ready.manifest);
+      const db = new Database(ready.target);
+      db.pragma("foreign_keys = ON");
+      drift.mutate(db, ready.manifest);
+      db.close();
+      const before = snapshotProtectedState(ready.target);
+
+      await expect(finalize(ready.target, ready.manifest), drift.name).rejects.toThrow();
+      expect(snapshotProtectedState(ready.target), drift.name).toEqual(before);
+    }
+  });
+
+  test("finalizes atomically to the same canonical-only schema as a fresh database and restores the named backup", async () => {
+    const rollback = await expandAndParseTwice(2);
+    await recordReadiness(rollback.target, rollback.manifest);
+    const beforeInjectedFailure = snapshotProtectedState(rollback.target);
+    await expect(
+      runMigrateCanonical({
+        sqlitePath: rollback.target,
+        approvedTargetPath: rollback.target,
+        args: ["--stage", "finalize", "--apply", "--backup-manifest", rollback.manifest],
+        hooks: { afterPrototypeDrop: () => { throw new Error("injected finalization failure"); } },
+      }),
+    ).rejects.toThrow(/injected finalization failure/i);
+    expect(snapshotProtectedState(rollback.target)).toEqual(beforeInjectedFailure);
+
+    const ready = await expandAndParseTwice(2);
+    await recordReadiness(ready.target, ready.manifest);
+    const evidence = readManifest(ready.manifest);
+    await finalize(ready.target, ready.manifest);
+    await finalize(ready.target, ready.manifest);
+
+    const migrated = new Database(ready.target, { readonly: true });
+    expect(migrated.pragma("user_version", { simple: true })).toBe(2);
+    expect(
+      migrated
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('updates','sections','lines','line_tags') ORDER BY name",
+        )
+        .pluck()
+        .all(),
+    ).toEqual([]);
+    expect(migrated.prepare("SELECT count(*) FROM documents").pluck().get()).toBe(2);
+    expect(migrated.prepare("SELECT count(*) FROM canonical_cutover_audits").pluck().get()).toBe(1);
+
+    const fresh = new Database(":memory:");
+    initializeCanonicalSchema(fresh);
+    const schemaSql = (db: DatabaseType): unknown[] => db
+      .prepare(
+        `SELECT type, name, tbl_name, sql
+           FROM sqlite_master
+          WHERE name NOT LIKE 'sqlite_%'
+          ORDER BY type, name`,
+      )
+      .all();
+    expect(schemaSql(migrated)).toEqual(schemaSql(fresh));
+    fresh.close();
+    migrated.close();
+
+    const restored = new Database(evidence.backup.path, { readonly: true, fileMustExist: true });
+    expect(restored.pragma("quick_check", { simple: true })).toBe("ok");
+    expect(restored.pragma("user_version", { simple: true })).toBe(0);
+    expect(restored.prepare("SELECT count(*) FROM updates").pluck().get()).toBe(2);
+    const restoredRows = restored.prepare("SELECT id, raw_body FROM updates ORDER BY id").all() as Array<{
+      id: string;
+      raw_body: string;
+    }>;
+    expect(restoredRows.map((row) => [row.id, row.raw_body])).toEqual(
+      [...ready.bodies].sort(([left], [right]) => left.localeCompare(right)),
+    );
+    restored.close();
+  });
+});
+
+test("CLI registry exposes separate expansion, readiness, finalization, and post-audit contracts", async () => {
   expect(COMMANDS["migrate-canonical"]).toEqual({
     module: "./migrate.js",
     runner: "runMigrateCanonical",
@@ -415,9 +832,24 @@ test("CLI registry exposes only expansion and strict audit contracts", async () 
   });
   expect(() => parseMigrateCanonicalArgs([])).toThrow();
   expect(() => parseMigrateCanonicalArgs(["--stage", "finalize", "--apply"])).toThrow();
+  expect(parseMigrateCanonicalArgs(["--stage", "finalize", "--apply", "--backup-manifest", "/tmp/evidence.json"])).toEqual({
+    stage: "finalize",
+    apply: true,
+    backupManifestPath: "/tmp/evidence.json",
+  });
   expect(() => parseMigrateCanonicalArgs(["--stage", "expand", "--bogus"])).toThrow();
   expect(() => parseAuditCanonicalArgs([])).toThrow();
   expect(() => parseAuditCanonicalArgs(["--strict", "--bogus"])).toThrow();
+  expect(parseAuditCanonicalArgs([
+    "--strict",
+    "--record-finalization-readiness",
+    "--backup-manifest",
+    "/tmp/evidence.json",
+  ])).toEqual({
+    strict: true,
+    recordFinalizationReadiness: true,
+    backupManifestPath: "/tmp/evidence.json",
+  });
 
   const originalArgv = process.argv;
   try {

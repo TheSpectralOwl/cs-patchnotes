@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { openDb } from "../src/db/client.js";
 import {
+  EXPANSION_SCHEMA_VERSION,
   LATEST_SCHEMA_VERSION,
+  initializeCanonicalSchema,
   inspectSchemaVersion,
   runMigrations,
 } from "../src/db/migrations.js";
@@ -128,7 +130,7 @@ describe("versioned additive migration", () => {
 
     runMigrations(db);
     expect(inspectSchemaVersion(db).state).toBe("transitional");
-    expect(db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
+    expect(db.pragma("user_version", { simple: true })).toBe(EXPANSION_SCHEMA_VERSION);
 
     const first = db
       .prepare(
@@ -173,6 +175,38 @@ describe("versioned additive migration", () => {
     expect(db.prepare("SELECT count(*) FROM documents").pluck().get()).toBe(1);
     expect(db.prepare("SELECT count(*) FROM source_records").pluck().get()).toBe(1);
     expect(db.pragma("foreign_key_check")).toEqual([]);
+  });
+
+  test("keeps additive expansion at version 1 and creates fresh canonical-only version 2 separately", () => {
+    const legacyPath = temporaryDatabasePath();
+    seedLegacyDatabase(legacyPath);
+    const legacy = track(new Database(legacyPath));
+    legacy.pragma("foreign_keys = ON");
+
+    runMigrations(legacy);
+    runMigrations(legacy);
+    expect(legacy.pragma("user_version", { simple: true })).toBe(EXPANSION_SCHEMA_VERSION);
+    expect(inspectSchemaVersion(legacy).state).toBe("transitional");
+    expect(legacy.prepare("SELECT count(*) FROM updates").pluck().get()).toBe(1);
+
+    const fresh = track(new Database(temporaryDatabasePath()));
+    fresh.pragma("foreign_keys = ON");
+    initializeCanonicalSchema(fresh);
+    initializeCanonicalSchema(fresh);
+
+    expect(fresh.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
+    expect(inspectSchemaVersion(fresh).state).toBe("canonical");
+    expect(
+      fresh
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('updates','sections','lines','line_tags') ORDER BY name",
+        )
+        .pluck()
+        .all(),
+    ).toEqual([]);
+    expect(
+      fresh.prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='documents'").pluck().get(),
+    ).toBe(1);
   });
 
   test("keeps pristine revisions append-only and selects changed bytes through one explicit head", () => {
