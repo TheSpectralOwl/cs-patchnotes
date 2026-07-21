@@ -180,6 +180,106 @@ describe("complete parse gate", () => {
     db.close();
   });
 
+  test("keeps unsupported blocks visible and gates a newly partial document", () => {
+    const db = openDb(":memory:");
+    const documentId = seed(db, "partial", "MATCH");
+    const partial: RegisteredParser = {
+      ...parser("partial", "MATCH"),
+      parse: (): CanonicalParseOutput => ({
+        status: "partial",
+        blocks: [
+          {
+            kind: "unsupported",
+            parentIndex: null,
+            text: null,
+            label: null,
+            sourceSpan: { start: 0, end: 5 },
+            sourceNodeType: "unknown_construct",
+            diagnosticCode: "UNSUPPORTED_CONSTRUCT",
+          },
+        ],
+        diagnostics: [
+          {
+            severity: "error",
+            code: "UNSUPPORTED_CONSTRUCT",
+            sourceSpan: { start: 0, end: 5 },
+            details: { construct: "unknown_construct" },
+          },
+        ],
+      }),
+    };
+
+    const summary = parseStoredDocuments(db, new ParserRegistry([partial]), {
+      runId: "run-partial",
+      now: () => 1_700_000_350,
+    });
+    const block = db
+      .prepare("SELECT kind, diagnostic_code FROM blocks WHERE document_id = ?")
+      .get(documentId) as { kind: string; diagnostic_code: string };
+
+    expect(summary).toMatchObject({
+      attempted: 1,
+      selected: 1,
+      materialized: 1,
+      partial: 1,
+      gateFailed: true,
+    });
+    expect(block).toEqual({ kind: "unsupported", diagnostic_code: "UNSUPPORTED_CONSTRUCT" });
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM search_fragments WHERE document_id = ?").get(
+        documentId,
+      ),
+    ).toEqual({ count: 0 });
+    expect(db.prepare("SELECT parse_status FROM documents WHERE id = ?").get(documentId)).toEqual({
+      parse_status: "partial",
+    });
+    db.close();
+  });
+
+  test("retains prior canonical blocks when a later pass quarantines the source", () => {
+    const db = openDb(":memory:");
+    const documentId = seed(db, "retained", "MATCH");
+    const complete: RegisteredParser = {
+      ...parser("complete", "MATCH"),
+      parse: (): CanonicalParseOutput => ({
+        status: "complete",
+        blocks: [
+          {
+            kind: "paragraph",
+            parentIndex: null,
+            text: "Previously materialized text",
+            label: null,
+            sourceSpan: { start: 0, end: 5 },
+            sourceNodeType: "plain_text",
+            diagnosticCode: null,
+          },
+        ],
+        diagnostics: [],
+      }),
+    };
+    parseStoredDocuments(db, new ParserRegistry([complete]), {
+      runId: "run-before-quarantine",
+      now: () => 1_700_000_360,
+    });
+
+    const summary = parseStoredDocuments(db, new ParserRegistry([parser("miss", "NEVER")]), {
+      runId: "run-after-quarantine",
+      now: () => 1_700_000_361,
+    });
+    const retained = db
+      .prepare("SELECT kind, text FROM blocks WHERE document_id = ?")
+      .all(documentId);
+
+    expect(summary).toMatchObject({ attempted: 1, quarantined: 1, gateFailed: true });
+    expect(retained).toEqual([{ kind: "paragraph", text: "Previously materialized text" }]);
+    expect(
+      db
+        .prepare("SELECT selection_state FROM document_parse_state WHERE document_id = ?")
+        .get(documentId),
+    ).toEqual({ selection_state: "quarantined_zero_match" });
+    db.close();
+  });
+
   test("prints exactly one complete summary before runParse rejects the non-zero gate", async () => {
     const db = openDb(":memory:");
     seed(db, "selected", "ALPHA");
