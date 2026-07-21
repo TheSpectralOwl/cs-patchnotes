@@ -26,6 +26,9 @@ const RETRIEVED_ATTRIBUTES = [
   "fragment_kind",
   "content_kind",
   "posted_at",
+  "text",
+  "title",
+  "ancestor_labels",
 ];
 
 interface LiveHit {
