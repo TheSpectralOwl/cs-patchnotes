@@ -71,9 +71,11 @@ describe("canonical schema", () => {
         "meta",
       ]),
     );
-    for (const legacy of ["updates", "sections", "lines", "line_tags", "canonical_cutover_audits"]) {
+    for (const legacy of ["updates", "sections", "lines", "line_tags"]) {
       expect(names.has(legacy)).toBe(false);
     }
+    // No non-canonical audit relations survive on a fresh database.
+    expect([...names].filter((name) => name.endsWith("_audits"))).toEqual([]);
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     expect(db.pragma("foreign_key_check")).toEqual([]);
   });
