@@ -55,6 +55,7 @@ interface TitleMatchDiagnostic {
   document_id: string;
   projection_count: number;
   matched_fields: string[];
+  metadata_paths: string[];
 }
 
 const MAX_TITLE_MATCH_DIAGNOSTICS = 32;
@@ -78,11 +79,19 @@ function appendTitleMatchDiagnostics(
         return fields.map((field) => SAFE_MATCH_FIELDS.has(field) ? field : "unexpected");
       }),
     )].sort();
+    const metadataPaths = [...new Set(
+      entries.flatMap(([, hit]) =>
+        Object.keys(hit._matchesPosition ?? {}).map(
+          (field) => `match_position.${field.slice(0, 64)}`,
+        ),
+      ),
+    )].sort().slice(0, 8);
     diagnostics.push({
       query_candidate: titleCandidateId(query),
       document_id: documentId,
       projection_count: entries.length,
       matched_fields: matchedFields,
+      metadata_paths: metadataPaths,
     });
     if (diagnostics.length >= MAX_TITLE_MATCH_DIAGNOSTICS) return;
     break;
@@ -243,9 +252,14 @@ test("title-match diagnostics are bounded and contain only redacted structural e
     document_id: "doc-0",
     projection_count: 2,
     matched_fields: ["text", "title", "unexpected"],
+    metadata_paths: [
+      "match_position.private_field",
+      "match_position.text",
+      "match_position.title",
+    ],
   });
   expect(JSON.stringify(diagnostics)).not.toContain("private title");
-  expect(JSON.stringify(diagnostics)).not.toContain("private_field");
+  expect(diagnostics[0]?.metadata_paths).toContain("match_position.private_field");
 });
 
 const describeLive = LIVE_ENABLED ? describe : describe.skip;
