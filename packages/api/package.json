@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
     "test": "vitest run",
+    "test:integration": "vitest run test/live-canonical.integration.test.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {
