@@ -115,7 +115,8 @@ describe("transitional canonical schema", () => {
           documentId: "doc-block-kinds",
           kind,
           preorder: index,
-          siblingOrder: index,
+          siblingOrder: kind === "list_item" ? 0 : index,
+          parentBlockId: kind === "list_item" ? "block-2" : null,
         }),
       ).not.toThrow();
     });
