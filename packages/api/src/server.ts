@@ -3,7 +3,7 @@ import helmet from "@fastify/helmet";
 import cors from "@fastify/cors";
 import { healthRoutes } from "./routes/health.js";
 import { searchRoutes } from "./routes/search.js";
-import { notesRoutes } from "./routes/notes.js";
+import { documentRoutes } from "./routes/documents.js";
 
 /**
  * Build a fresh Fastify instance with security headers, the health route, and a
@@ -30,7 +30,7 @@ export function buildServer(): FastifyInstance {
   app.register(cors, { origin: process.env.WEB_ORIGIN ?? true });
   app.register(healthRoutes);
   app.register(searchRoutes);
-  app.register(notesRoutes);
+  app.register(documentRoutes);
 
   app.get("/", async () => ({
     service: "cs-patchnotes-api",

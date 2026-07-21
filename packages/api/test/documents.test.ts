@@ -9,6 +9,8 @@ const dbPath = join(dir, "patchnotes.db");
 const DOCUMENT_ID = "5a9afc25-7d9c-4da4-a9a4-488607624873";
 const SOURCE_ID = "1e06dbef-166c-4c3d-bb1a-2842d42ea953";
 const STEAM_GID = "1818118366178075";
+const LONG_SOURCE_NODE_TYPE = `mystery-widget-${"x".repeat(80)}`;
+const LONG_DIAGNOSTIC_CODE = `unsupported-construct-${"y".repeat(80)}`;
 
 const expectedDetail = {
   document: {
@@ -64,9 +66,9 @@ const expectedDetail = {
       preorder: 4,
       sibling_order: 2,
       unsupported: {
-        source_node_type: "mystery-widget",
+        source_node_type: LONG_SOURCE_NODE_TYPE.slice(0, 64),
         source_span: { start: 120, end: 156 },
-        diagnostic_code: "unsupported_construct",
+        diagnostic_code: LONG_DIAGNOSTIC_CODE.slice(0, 64),
       },
     },
   ],
@@ -98,6 +100,8 @@ function allObjectKeys(value: unknown): string[] {
 
 beforeAll(() => {
   process.env.SQLITE_PATH = dbPath;
+  process.env.MEILI_HOST = "https://meili-host-secret.invalid";
+  process.env.MEILI_MASTER_KEY = "meili-master-key-secret";
   const db = openDb(dbPath);
 
   db.prepare(
@@ -171,8 +175,8 @@ beforeAll(() => {
   insertBlock.run({
     id: `${DOCUMENT_ID}_b4`, document_id: DOCUMENT_ID, parent_block_id: `${DOCUMENT_ID}_b0`,
     kind: "unsupported", preorder: 4, sibling_order: 2, text: null, label: null,
-    source_start: 120, source_end: 156, source_node_type: "mystery-widget",
-    diagnostic_code: "unsupported_construct",
+    source_start: 120, source_end: 156, source_node_type: LONG_SOURCE_NODE_TYPE,
+    diagnostic_code: LONG_DIAGNOSTIC_CODE,
   });
 
   const insertMedia = db.prepare(
@@ -216,6 +220,8 @@ beforeAll(() => {
 
 afterAll(() => {
   delete process.env.SQLITE_PATH;
+  delete process.env.MEILI_HOST;
+  delete process.env.MEILI_MASTER_KEY;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -246,6 +252,7 @@ describe("canonical document detail", () => {
       ["/documents/not-a-uuid", 400, { error: "invalid document reference" }],
       [`/documents/by-ref/not_a_public_namespace/${STEAM_GID}`, 400, { error: "invalid document reference" }],
       [`/documents/by-ref/${STEAM_GID_NAMESPACE}/not-a-gid`, 400, { error: "invalid document reference" }],
+      [`/documents/by-ref/${STEAM_GID_NAMESPACE}/%20`, 400, { error: "invalid document reference" }],
       [`/documents/by-ref/${STEAM_GID_NAMESPACE}/9999999999999999`, 404, { error: "document not found" }],
       ["/documents/4e18c7db-aa74-4f0e-9978-dded25ea6c35", 404, { error: "document not found" }],
     ] as const;
@@ -282,6 +289,8 @@ describe("canonical document detail", () => {
     expect(serialized).not.toContain("full-source-locator-secret");
     expect(serialized).not.toContain("media-provenance-secret");
     expect(serialized).not.toContain("diagnostic-excerpt-secret");
+    expect(serialized).not.toContain("meili-host-secret");
+    expect(serialized).not.toContain("meili-master-key-secret");
 
     const unsupported = body.blocks.find((block: { kind: string }) => block.kind === "unsupported");
     expect(unsupported).toEqual(expectedDetail.blocks[4]);
