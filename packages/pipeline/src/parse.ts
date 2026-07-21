@@ -18,6 +18,11 @@ import { ParserRegistry } from "./parse/registry.js";
 import { steamNewsBbcodeParser } from "./parse/steam-bbcode.js";
 import { steamPatchPlaintextParser } from "./parse/steam-plaintext.js";
 import {
+  STEAM_MAX_BLOCKS,
+  STEAM_MAX_DIAGNOSTICS,
+  STEAM_MAX_MEDIA_ITEMS,
+} from "./parse/steam-tokenizer.js";
+import {
   buildSearchFragments,
   GROUPING_POLICY_VERSION,
   type SearchFragmentData,
@@ -69,9 +74,12 @@ interface ExistingParseState {
   grouping_policy_version: string | null;
 }
 
-const MAX_OUTPUT_BLOCKS = 10_000;
-const MAX_OUTPUT_MEDIA_ITEMS = 2_000;
-const MAX_OUTPUT_DIAGNOSTICS = 32;
+// The materializer enforces the SAME exported end-to-end limits the parsers cap
+// their output at, so a bounded parser result passes this defensive bound and is
+// stored as bounded partial output instead of becoming an execution failure.
+const MAX_OUTPUT_BLOCKS = STEAM_MAX_BLOCKS;
+const MAX_OUTPUT_MEDIA_ITEMS = STEAM_MAX_MEDIA_ITEMS;
+const MAX_OUTPUT_DIAGNOSTICS = STEAM_MAX_DIAGNOSTICS;
 const MAX_DIAGNOSTIC_DETAILS = 8;
 const MAX_DIAGNOSTIC_STRING = 160;
 

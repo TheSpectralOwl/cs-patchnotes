@@ -6,6 +6,18 @@ export const STEAM_MAX_TOKENS = 20_000;
 export const STEAM_MAX_NESTING_DEPTH = 64;
 export const STEAM_MAX_DIAGNOSTICS = 64;
 
+/**
+ * One end-to-end output limit set shared by the parsers and the materializer.
+ * The parsers cap their emitted output at these values (marking the result
+ * partial with a bounded overflow diagnostic) and the materializer enforces the
+ * identical values as a defensive bound, so a bounded parser result always
+ * materializes as bounded partial output rather than a whole-document failure.
+ * Block output tracks the token bound because one token can map to at most one
+ * emitted block per source line.
+ */
+export const STEAM_MAX_BLOCKS = STEAM_MAX_TOKENS;
+export const STEAM_MAX_MEDIA_ITEMS = 2_000;
+
 const PLACEHOLDER = "{STEAM_CLAN_IMAGE}";
 const RECOGNIZED_TAGS = new Set([
   "p",

@@ -16,6 +16,12 @@ import type {
 } from "../src/parse/contract.js";
 import { buildSearchFragments, GROUPING_POLICY_VERSION } from "../src/parse/fragments.js";
 import { ParserRegistry } from "../src/parse/registry.js";
+import {
+  STEAM_MAX_BLOCKS,
+  STEAM_MAX_DIAGNOSTICS,
+} from "../src/parse/steam-tokenizer.js";
+import { steamNewsBbcodeParser } from "../src/parse/steam-bbcode.js";
+import { steamPatchPlaintextParser } from "../src/parse/steam-plaintext.js";
 import { parseStoredDocuments } from "../src/parse.js";
 
 function block(
@@ -265,6 +271,73 @@ describe("transactional canonical materialization", () => {
     const validation = parseStoredDocuments(db, new ParserRegistry([invalid]), { runId: "rollback-validation", now: () => 42 });
     expect(validation).toMatchObject({ attempted: 2, errors: 1, quarantined: 1, materialized: 0, gateFailed: true });
     expect(rows(db, badId)).toEqual(badBefore);
+    db.close();
+  });
+});
+
+describe("one end-to-end limit set yields bounded partial output", () => {
+  test("a synthetic output at the shared diagnostic limit materializes as bounded partial", () => {
+    const db = openDb(":memory:");
+    const documentId = seed(db, "diag-boundary", "DIAG");
+    const diagnostics = Array.from({ length: STEAM_MAX_DIAGNOSTICS }, (_, index) => ({
+      severity: "error" as const,
+      code: `BOUNDED_DIAGNOSTIC_${index}`,
+      sourceSpan: null,
+      details: {},
+    }));
+    const atLimit = parser("diag", "1.0.0", "DIAG", () => ({
+      status: "partial",
+      blocks: [block("paragraph", null, "Bounded body", null, 0)],
+      diagnostics,
+    }));
+
+    const summary = parseStoredDocuments(db, new ParserRegistry([atLimit]), { runId: "diag-boundary", now: () => 50 });
+
+    expect(summary).toMatchObject({ materialized: 1, partial: 1, errors: 0 });
+    const state = db.prepare("SELECT materialization_status FROM document_parse_state WHERE document_id = ?").get(documentId);
+    expect(state).toEqual({ materialization_status: "partial" });
+    const failed = db.prepare("SELECT COUNT(*) AS n FROM parse_diagnostics WHERE code = 'PARSER_EXECUTION_FAILED'").get() as { n: number };
+    expect(failed.n).toBe(0);
+    const stored = db.prepare("SELECT COUNT(*) AS n FROM parse_diagnostics WHERE document_id = ?").get(documentId) as { n: number };
+    expect(stored.n).toBe(STEAM_MAX_DIAGNOSTICS);
+    db.close();
+  });
+
+  test("a diagnostic-heavy body is capped to the shared diagnostic limit and stored partial, not failed", () => {
+    const db = openDb(":memory:");
+    // A structural [p] tag selects the rich parser; the trailing unknown tags
+    // each become an unsupported construct diagnostic, exceeding the raw count
+    // before the parser caps it at the shared diagnostic limit.
+    const noise = Array.from({ length: STEAM_MAX_DIAGNOSTICS + 10 }, (_, index) => `[zz${index}][/zz${index}]`).join("");
+    const documentId = seed(db, "diag-overflow", `[p]Fixed a thing[/p]${noise}`);
+    const registry = new ParserRegistry([steamPatchPlaintextParser, steamNewsBbcodeParser]);
+
+    const summary = parseStoredDocuments(db, registry, { runId: "diag-overflow", now: () => 51 });
+
+    expect(summary).toMatchObject({ materialized: 1, partial: 1, errors: 0 });
+    const state = db.prepare("SELECT materialization_status FROM document_parse_state WHERE document_id = ?").get(documentId);
+    expect(state).toEqual({ materialization_status: "partial" });
+    const stored = db.prepare("SELECT COUNT(*) AS n FROM parse_diagnostics WHERE document_id = ?").get(documentId) as { n: number };
+    expect(stored.n).toBeLessThanOrEqual(STEAM_MAX_DIAGNOSTICS);
+    expect(stored.n).toBeGreaterThan(32);
+    db.close();
+  });
+
+  test("a body past the shared block limit is capped to the limit and stored partial, not failed", () => {
+    const db = openDb(":memory:");
+    const body = Array.from({ length: STEAM_MAX_BLOCKS + 1 }, () => "- Adjusted a value").join("\n");
+    const documentId = seed(db, "block-overflow", body);
+    const registry = new ParserRegistry([steamPatchPlaintextParser, steamNewsBbcodeParser]);
+
+    const summary = parseStoredDocuments(db, registry, { runId: "block-overflow", now: () => 52 });
+
+    expect(summary).toMatchObject({ materialized: 1, partial: 1, errors: 0 });
+    const state = db.prepare("SELECT materialization_status FROM document_parse_state WHERE document_id = ?").get(documentId);
+    expect(state).toEqual({ materialization_status: "partial" });
+    const blocks = db.prepare("SELECT COUNT(*) AS n FROM blocks WHERE document_id = ?").get(documentId) as { n: number };
+    expect(blocks.n).toBeLessThanOrEqual(STEAM_MAX_BLOCKS);
+    const failed = db.prepare("SELECT COUNT(*) AS n FROM parse_diagnostics WHERE code = 'PARSER_EXECUTION_FAILED'").get() as { n: number };
+    expect(failed.n).toBe(0);
     db.close();
   });
 });

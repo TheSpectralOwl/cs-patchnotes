@@ -1,6 +1,6 @@
 import type { CanonicalBlockData, DetectionEvidence, PristineSource, RegisteredParser } from "./contract.js";
 import { decodeSteamEntities } from "./entities.js";
-import { STEAM_MAX_SOURCE_BYTES, STEAM_MAX_TOKENS } from "./steam-tokenizer.js";
+import { STEAM_MAX_BLOCKS, STEAM_MAX_SOURCE_BYTES } from "./steam-tokenizer.js";
 
 export const STEAM_PLAINTEXT_PARSER_VERSION = "1.0.0";
 
@@ -138,7 +138,7 @@ function parse(source: PristineSource) {
   let currentHeadingIndex: number | null = null;
 
   for (const rawLine of sourceLines(source.pristineBody)) {
-    if (blocks.length >= STEAM_MAX_TOKENS) {
+    if (blocks.length >= STEAM_MAX_BLOCKS) {
       bounded = true;
       break;
     }

@@ -9,7 +9,9 @@ import type {
 } from "./contract.js";
 import { decodeSteamEntities } from "./entities.js";
 import {
+  STEAM_MAX_BLOCKS,
   STEAM_MAX_DIAGNOSTICS,
+  STEAM_MAX_MEDIA_ITEMS,
   STEAM_MAX_SOURCE_BYTES,
   tokenizeSteamBbcode,
   type SteamTagToken,
@@ -272,9 +274,23 @@ interface MappingState {
   headings: HeadingEntry[];
   plainBulletParents: number[];
   plainBulletLists: number[];
+  blockOverflow: boolean;
+  mediaOverflow: boolean;
 }
 
+// Cap emitted blocks at the shared end-to-end limit. When the cap is reached the
+// result is marked partial and a single bounded overflow diagnostic is appended,
+// so the output stays within the materializer's identical defensive bound rather
+// than exceeding it and triggering a whole-document failure.
 function addBlock(state: MappingState, block: CanonicalBlockData): number {
+  if (state.blocks.length >= STEAM_MAX_BLOCKS) {
+    if (!state.blockOverflow) {
+      state.blockOverflow = true;
+      state.partial = true;
+      boundedDiagnostic(state.diagnostics, "BLOCK_LIMIT_EXCEEDED", block.sourceSpan);
+    }
+    return state.blocks.length - 1;
+  }
   state.blocks.push(block);
   return state.blocks.length - 1;
 }
@@ -360,16 +376,30 @@ function addImage(
   parentIndex: number | null,
   existingGroupIndex?: number,
 ): void {
+  if (state.mediaItems.length >= STEAM_MAX_MEDIA_ITEMS) {
+    if (!state.mediaOverflow) {
+      state.mediaOverflow = true;
+      state.partial = true;
+      boundedDiagnostic(state.diagnostics, "MEDIA_LIMIT_EXCEEDED", node.sourceSpan);
+    }
+    return;
+  }
   const locator = node.attributes.src ?? node.attributes.value ?? locatorText(node.children);
-  const groupIndex = existingGroupIndex ?? addBlock(state, {
-    kind: "media_group",
-    parentIndex,
-    text: null,
-    label: null,
-    sourceSpan: node.sourceSpan,
-    sourceNodeType: "img",
-    diagnosticCode: null,
-  });
+  let groupIndex = existingGroupIndex;
+  if (groupIndex === undefined) {
+    const beforeBlocks = state.blocks.length;
+    groupIndex = addBlock(state, {
+      kind: "media_group",
+      parentIndex,
+      text: null,
+      label: null,
+      sourceSpan: node.sourceSpan,
+      sourceNodeType: "img",
+      diagnosticCode: null,
+    });
+    // Refuse to orphan a media item whose media_group block hit the block cap.
+    if (state.blocks.length === beforeBlocks) return;
+  }
   if (locator.length === 0) {
     boundedDiagnostic(state.diagnostics, "MALFORMED_IMAGE", node.sourceSpan);
     state.partial = true;
@@ -685,6 +715,8 @@ function parse(source: PristineSource) {
     headings: [],
     plainBulletParents: [],
     plainBulletLists: [],
+    blockOverflow: false,
+    mediaOverflow: false,
   };
   for (const diagnostic of tree.diagnostics) {
     if (state.diagnostics.length >= STEAM_MAX_DIAGNOSTICS) break;
