@@ -1,7 +1,12 @@
 import { test, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { openDb, type UpdateRow } from "@cs-patchnotes/shared";
+import {
+  getCurrentSourceRecord,
+  getDocumentByExternalIdentifier,
+  openDb,
+  STEAM_GID_NAMESPACE,
+} from "@cs-patchnotes/shared";
 import {
   isPatchNote,
   channelForItem,
@@ -35,8 +40,8 @@ function item(overrides: Partial<SteamNewsItem>): SteamNewsItem {
   };
 }
 
-function rowCount(db: ReturnType<typeof openDb>): number {
-  return (db.prepare("SELECT COUNT(*) AS n FROM updates").get() as { n: number }).n;
+function rowCount(db: ReturnType<typeof openDb>, table: string): number {
+  return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
 }
 
 test("isPatchNote accepts a real CS2 Update post", () => {
@@ -116,14 +121,7 @@ test("game is derived from posted_at against the 2023-09-27 CS2 cutover", () => 
   expect(gameForDate(dayBefore)).toBe("csgo");
 });
 
-test("the updates table carries a channel column", () => {
-  const db = openDb(":memory:");
-  const cols = db.prepare("PRAGMA table_info(updates)").all() as { name: string }[];
-  expect(cols.some((c) => c.name === "channel")).toBe(true);
-  db.close();
-});
-
-test("upsert stores only accepted notes, persists channel, is idempotent, keeps raw_body pristine", () => {
+test("upsert writes only accepted notes to canonical identity and pristine current source", () => {
   const db = openDb(":memory:");
   const preRelease = item({
     gid: "1813041031352604",
@@ -135,25 +133,88 @@ test("upsert stores only accepted notes, persists channel, is idempotent, keeps 
 
   const acceptedFirst = upsertUpdates(db, feed);
   expect(acceptedFirst).toBe(2); // CS2 Update (title) + Pre-Release (allow-list)
-  expect(rowCount(db)).toBe(2);
+  expect(rowCount(db, "documents")).toBe(2);
 
-  // Second run over the same feed must not create duplicates (upsert on gid).
+  const firstDocument = getDocumentByExternalIdentifier(db, STEAM_GID_NAMESPACE, cs2.gid)!;
+  const firstSource = getCurrentSourceRecord(db, firstDocument.id, "steam_news")!;
+
+  // Second run over the same feed must reuse canonical identity and the exact source revision.
   const acceptedSecond = upsertUpdates(db, feed);
   expect(acceptedSecond).toBe(2);
-  expect(rowCount(db)).toBe(2);
-
-  const stored = db.prepare("SELECT * FROM updates WHERE id = ?").get(cs2.gid) as UpdateRow;
-  // raw_body is byte-for-byte the fixture contents (pristine source of truth).
-  expect(stored.raw_body).toBe(cs2.contents);
-  expect(stored.id).toBe(cs2.gid);
+  expect(rowCount(db, "documents")).toBe(2);
+  expect(rowCount(db, "source_records")).toBe(2);
+  const stored = getDocumentByExternalIdentifier(db, STEAM_GID_NAMESPACE, cs2.gid)!;
+  const storedSource = getCurrentSourceRecord(db, stored.id, "steam_news")!;
+  expect(stored.id).toBe(firstDocument.id);
+  expect(storedSource.id).toBe(firstSource.id);
+  expect(storedSource.pristine_body).toBe(cs2.contents);
   expect(stored.game).toBe("cs2");
   expect(stored.title).toBe(cs2.title);
   expect(stored.channel).toBe("mainline");
 
-  const storedBeta = db
-    .prepare("SELECT * FROM updates WHERE id = ?")
-    .get("1813041031352604") as UpdateRow;
+  const storedBeta = getDocumentByExternalIdentifier(
+    db,
+    STEAM_GID_NAMESPACE,
+    "1813041031352604",
+  )!;
   expect(storedBeta.channel).toBe("beta");
+  expect(
+    db.prepare("SELECT count(*) FROM source_locators").pluck().get(),
+  ).toBe(2);
 
+  for (const table of [
+    "document_parse_state",
+    "blocks",
+    "search_fragments",
+    "parse_diagnostics",
+    "fragment_tags",
+  ]) {
+    expect(rowCount(db, table)).toBe(0);
+  }
+
+  db.close();
+});
+
+test("changed Steam bytes append immutable history and move only the explicit source head", () => {
+  const db = openDb(":memory:");
+  const original = item({
+    gid: "changed-body-gid",
+    title: "Counter-Strike 2 Update",
+    url: "https://example.invalid/changed-body-gid",
+    contents: "first exact body 🧪",
+  });
+  const changed = { ...original, contents: `${original.contents}\nsecond exact body` };
+
+  upsertUpdates(db, [original]);
+  const document = getDocumentByExternalIdentifier(db, STEAM_GID_NAMESPACE, original.gid)!;
+  const first = getCurrentSourceRecord(db, document.id, "steam_news")!;
+  upsertUpdates(db, [changed]);
+  const current = getCurrentSourceRecord(db, document.id, "steam_news")!;
+
+  expect(current.id).not.toBe(first.id);
+  expect(current.pristine_body).toBe(changed.contents);
+  expect(current.supersedes_source_record_id).toBe(first.id);
+  expect(
+    db.prepare("SELECT pristine_body FROM source_records WHERE id = ?").pluck().get(first.id),
+  ).toBe(original.contents);
+  expect(rowCount(db, "source_records")).toBe(2);
+  expect(rowCount(db, "documents")).toBe(1);
+  db.close();
+});
+
+test("similar title and date with distinct GIDs remain distinct documents", () => {
+  const db = openDb(":memory:");
+  const first = item({
+    gid: "similar-a",
+    title: "Counter-Strike 2 Update",
+    url: "https://example.invalid/similar-a",
+    contents: "same body",
+  });
+  const second = { ...first, gid: "similar-b", url: "https://example.invalid/similar-b" };
+  expect(upsertUpdates(db, [first, second])).toBe(2);
+  expect(rowCount(db, "documents")).toBe(2);
+  expect(
+    getDocumentByExternalIdentifier(db, STEAM_GID_NAMESPACE, first.gid)?.id,
+  ).not.toBe(getDocumentByExternalIdentifier(db, STEAM_GID_NAMESPACE, second.gid)?.id);
   db.close();
 });

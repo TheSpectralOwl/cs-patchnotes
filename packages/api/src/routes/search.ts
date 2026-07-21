@@ -1,6 +1,48 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import {
+  applyHydrationBudget,
+  collapseRankedGroupHits,
+  type ContentKind,
+  type RankedFragmentHit,
+  type RankedHydrationRequest,
+  type SearchFragmentKind,
+} from "@cs-patchnotes/shared";
 import { buildMeili } from "../meili.js";
+import { createSearchHydrator } from "../db/hydrate.js";
+
+const INDEX_UID = "canonical_fragments";
+const PATCH_NOTES_FILTER = "content_kind = patch_notes";
+const RETRIEVED_ATTRIBUTES = [
+  "id",
+  "fragment_id",
+  "block_id",
+  "document_id",
+  "primary_release_id",
+  "group_anchor_block_id",
+  "fragment_kind",
+  "content_kind",
+  "posted_at",
+  // Match positions are only emitted for attributes returned by the search.
+  // These values are used as internal match evidence and are never serialized;
+  // response display text is hydrated exclusively from SQLite below.
+  "text",
+  "title",
+  "ancestor_labels",
+] as const;
+
+interface RawFragmentHit {
+  id: string;
+  fragment_id: string;
+  block_id: string;
+  document_id: string;
+  primary_release_id: string | null;
+  group_anchor_block_id: string | null;
+  fragment_kind: SearchFragmentKind;
+  content_kind: ContentKind;
+  posted_at: number;
+  _matchesPosition?: Record<string, unknown>;
+}
 
 /**
  * Query schema for `GET /search`. This is the untrusted-input boundary: `q` is
@@ -20,27 +62,73 @@ const QuerySchema = z.object({
 });
 
 /**
- * Search route plugin. Registers `GET /search` as the single public search
- * surface, proxying validated queries to the private `patch_lines` Meilisearch
- * index. An empty query returns a newest-first recent-updates landing (sorted
- * `posted_at:desc`) so the SPA never shows a blank screen. Each returned line
- * document already carries `text`, `title`, `posted_at`, and `game` for a result
- * row. Meilisearch stays private — the browser never holds its key or host.
+ * Search uses Meilisearch only for a bounded ranked identifier window. Every
+ * display field and canonical context row is then read from SQLite in bulk.
  */
 export async function searchRoutes(app: FastifyInstance): Promise<void> {
   const meili = buildMeili();
+  const hydrator = createSearchHydrator();
+
+  app.addHook("onClose", async () => hydrator.close());
 
   app.get("/search", async (req, reply) => {
     const parsed = QuerySchema.safeParse(req.query);
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid query parameters" });
     }
-    const { q, limit } = parsed.data;
-    const index = meili.index("patch_lines");
+    const { limit } = parsed.data;
+    const q = parsed.data.q.trim();
+    const index = meili.index(INDEX_UID);
+    const result = await index.search(q, {
+      limit,
+      filter: PATCH_NOTES_FILTER,
+      attributesToRetrieve: [...RETRIEVED_ATTRIBUTES],
+      ...(q === ""
+        ? { sort: ["posted_at:desc"] }
+        : { showMatchesPosition: true }),
+    });
+    const hits = result.hits as unknown as RawFragmentHit[];
 
-    // Empty query → recent-updates landing (newest first, no ranking noise).
-    return q.trim() === ""
-      ? index.search("", { limit, sort: ["posted_at:desc"] })
-      : index.search(q, { limit });
+    let requests: RankedHydrationRequest[];
+    if (q === "") {
+      const firstByDocument = new Map<string, RawFragmentHit>();
+      for (const hit of hits) {
+        if (!firstByDocument.has(hit.document_id)) firstByDocument.set(hit.document_id, hit);
+      }
+      requests = [...firstByDocument.values()]
+        .sort(
+          (a, b) =>
+            b.posted_at - a.posted_at || a.document_id.localeCompare(b.document_id),
+        )
+        .map((hit, rank) => ({ kind: "document", document_id: hit.document_id, rank }));
+    } else {
+      const rankedHits: RankedFragmentHit[] = hits.map((hit) => {
+        const positions = hit._matchesPosition ?? {};
+        return {
+          id: hit.id,
+          fragment_id: hit.fragment_id,
+          block_id: hit.block_id,
+          document_id: hit.document_id,
+          primary_release_id: hit.primary_release_id,
+          group_anchor_block_id: hit.group_anchor_block_id,
+          fragment_kind: hit.fragment_kind,
+          content_kind: hit.content_kind,
+          posted_at: hit.posted_at,
+          matched_fields: {
+            text: Object.hasOwn(positions, "text"),
+            title: Object.hasOwn(positions, "title"),
+            ancestor_labels: Object.hasOwn(positions, "ancestor_labels"),
+          },
+        };
+      });
+      requests = collapseRankedGroupHits(rankedHits);
+    }
+
+    // A single legal limit can collapse into more requests than the hydration
+    // cap. Bound the request set deterministically so no legal limit throws /
+    // 500s, and surface explicit truncation metadata when the window is cut.
+    const budgeted = applyHydrationBudget(requests);
+    const hydrated = hydrator.hydrate(budgeted.requests);
+    return { hits: hydrated.matches, truncation: budgeted.budget };
   });
 }

@@ -21,5 +21,14 @@ export type EnvVarName =
   | "WEB_ORIGIN";
 
 export * from "./types.js";
+export * from "./search.js";
 export * from "./db/ids.js";
+export * from "./db/repositories/documents.js";
+export * from "./db/repositories/hydration.js";
+export {
+  CANONICAL_SCHEMA_VERSION,
+  initializeCanonicalSchema,
+  inspectSchemaVersion,
+} from "./db/migrations.js";
+export type { SchemaInspection, SchemaState } from "./db/migrations.js";
 export { openDb } from "./db/client.js";

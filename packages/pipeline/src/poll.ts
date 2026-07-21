@@ -1,21 +1,26 @@
 import type { Database } from "better-sqlite3";
-import { openDb, type Channel } from "@cs-patchnotes/shared";
+import {
+  openDb,
+  upsertSteamSourceRecord,
+  type BodyFormat,
+  type Channel,
+} from "@cs-patchnotes/shared";
 import { ALLOW_LIST, DENY_LIST } from "./overrides.js";
 
 /**
  * The write-side "poll" stage: fetch the newest CS2 update slice from the Steam
  * News API, keep only real patch notes, and upsert their pristine raw bodies
- * into SQLite keyed on the Valve gid (idempotent — re-running produces no
- * duplicates).
+ * into canonical SQLite documents resolved through the Valve gid namespace
+ * (idempotent — re-running produces no duplicates).
  *
  * Separation of concerns: this stage never parses meaning. It stores
- * `raw_body = item.contents` untouched so the corpus can be re-parsed later
+ * `pristine_body = item.contents` untouched so the corpus can be re-parsed later
  * without re-fetching (the source-of-truth split).
  */
 
 /** One item from `appnews.newsitems` (live-verified shape, 2026 Steam feed). */
 export interface SteamNewsItem {
-  /** Stable, Valve-assigned id → becomes `update.id`. */
+  /** Stable, Valve-assigned external identity. */
   gid: string;
   title: string;
   url: string;
@@ -92,10 +97,17 @@ export function gameForDate(postedAt: number): "cs2" | "csgo" {
   return postedAt >= CS2_CUTOVER ? "cs2" : "csgo";
 }
 
+/** Determine only the source encoding; parser selection remains a separate pass. */
+export function bodyFormatForContents(contents: string): BodyFormat {
+  return /\[\/?(?:p|list|\*|h[1-6]|img|url|b|i|u)\b|\{STEAM_CLAN_IMAGE\}/i.test(contents)
+    ? "bbcode"
+    : "plain_text";
+}
+
 /**
- * Filter the given feed to real CS2 patch notes and upsert each into `updates`
- * inside a single transaction. Upsert is keyed on `id = gid` so re-running is
- * idempotent. `raw_body` is stored verbatim (pristine).
+ * Filter the given feed to real patch notes and bind each Steam identity to one
+ * canonical document inside a single transaction. Exact source bytes are
+ * append-only revisions selected through an explicit adapter head.
  *
  * @returns the number of accepted (upserted) notes.
  */
@@ -103,32 +115,20 @@ export function upsertUpdates(db: Database, items: SteamNewsItem[]): number {
   const accepted = items.filter(isPatchNote);
   const fetchedAt = Math.floor(Date.now() / 1000);
 
-  const stmt = db.prepare(`
-    INSERT INTO updates (id, posted_at, title, url, feedname, game, raw_body, fetched_at, channel)
-    VALUES (@id, @posted_at, @title, @url, @feedname, @game, @raw_body, @fetched_at, @channel)
-    ON CONFLICT(id) DO UPDATE SET
-      posted_at  = excluded.posted_at,
-      title      = excluded.title,
-      url        = excluded.url,
-      feedname   = excluded.feedname,
-      game       = excluded.game,
-      raw_body   = excluded.raw_body,
-      fetched_at = excluded.fetched_at,
-      channel    = excluded.channel
-  `);
-
   const tx = db.transaction((rows: SteamNewsItem[]) => {
     for (const it of rows) {
-      stmt.run({
-        id: it.gid,
-        posted_at: it.date,
-        title: it.title,
+      upsertSteamSourceRecord(db, {
+        gid: it.gid,
         url: it.url,
-        feedname: it.feedname,
+        title: it.title,
+        posted_at: it.date,
         game: gameForDate(it.date),
-        raw_body: it.contents, // PRISTINE — never mutate the source of truth
-        fetched_at: fetchedAt,
         channel: channelForItem(it),
+        content_kind: "patch_notes",
+        source_adapter: "steam_news",
+        body_format: bodyFormatForContents(it.contents),
+        pristine_body: it.contents,
+        fetched_at: fetchedAt,
       });
     }
   });
@@ -200,7 +200,7 @@ export async function pollUpdates(opts: PollOptions = {}): Promise<number> {
 /** CLI entrypoint for `pipeline poll`. */
 export async function runPoll(): Promise<void> {
   const accepted = await pollUpdates();
-  console.log(`poll: upserted ${accepted} CS2 update(s)`);
+  console.log(`poll: upserted ${accepted} canonical patch note(s)`);
 }
 
 /** Default backfill fetch size — must exceed the full corpus (~1748 items). */

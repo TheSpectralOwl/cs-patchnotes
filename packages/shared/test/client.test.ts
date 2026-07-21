@@ -1,7 +1,7 @@
 import { test, expect } from "vitest";
 import { openDb } from "../src/db/client.js";
 
-const TABLES = ["updates", "sections", "lines", "line_tags", "meta"];
+const TABLES = ["meta", "documents", "source_records", "blocks", "search_fragments"];
 
 function tableNames(db: ReturnType<typeof openDb>): string[] {
   return db
@@ -18,7 +18,7 @@ test("openDb applies WAL journal mode", () => {
   db.close();
 });
 
-test("openDb creates all five tables immediately", () => {
+test("openDb creates the canonical tables immediately", () => {
   const db = openDb(":memory:");
   const names = tableNames(db);
   for (const t of TABLES) {

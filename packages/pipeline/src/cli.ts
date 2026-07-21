@@ -2,8 +2,9 @@
  * The single `pipeline` CLI entrypoint.
  *
  * One greppable dispatch: `pipeline <subcommand>` reads `process.argv` and runs
- * the matching stage. The full `poll | parse | reindex | rebuild` surface is
- * wired here; each stage plugs into the same registry without touching callers.
+ * the matching stage. The full `poll | backfill | parse | reindex | rebuild`
+ * surface is wired here; each stage plugs into the same registry without
+ * touching callers.
  *
  * Each subcommand module is loaded lazily via a runtime `import()` so a single
  * invocation only pulls in the stage it needs (and stages can be added
