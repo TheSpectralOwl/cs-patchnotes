@@ -7,6 +7,7 @@ import type {
   RegisteredParser,
   SourceSpan,
 } from "./contract.js";
+import { decodeSteamEntities } from "./entities.js";
 import {
   STEAM_MAX_DIAGNOSTICS,
   STEAM_MAX_SOURCE_BYTES,
@@ -218,22 +219,8 @@ function treeFromTokens(raw: string, tokens: readonly SteamToken[], consumedEnd:
   return { children: root.children, diagnostics, partial };
 }
 
-function decodeEntities(value: string): string {
-  return value.replace(/&(?:#(\d+)|#x([0-9a-f]+)|lt|gt|quot|apos|amp);/gi, (entity, decimal, hex) => {
-    if (decimal !== undefined) return String.fromCodePoint(Number.parseInt(decimal, 10));
-    if (hex !== undefined) return String.fromCodePoint(Number.parseInt(hex, 16));
-    switch (entity.toLowerCase()) {
-      case "&lt;": return "<";
-      case "&gt;": return ">";
-      case "&quot;": return '"';
-      case "&apos;": return "'";
-      default: return "&";
-    }
-  });
-}
-
 function cleanSemanticText(value: string): string {
-  return decodeEntities(value)
+  return decodeSteamEntities(value)
     .replace(/\\([\[\]])/g, "$1")
     .replace(/https?:\/\/[^\s<]+/gi, " ")
     .replace(/\s+/g, " ")
@@ -269,7 +256,7 @@ function locatorText(nodes: readonly TreeNode[]): string {
     else if (node.type === "tag") for (const child of node.children) visit(child);
   };
   for (const node of nodes) visit(node);
-  return decodeEntities(value).trim();
+  return decodeSteamEntities(value).trim();
 }
 
 interface HeadingEntry {

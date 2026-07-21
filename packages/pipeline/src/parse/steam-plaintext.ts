@@ -1,4 +1,5 @@
 import type { CanonicalBlockData, DetectionEvidence, PristineSource, RegisteredParser } from "./contract.js";
+import { decodeSteamEntities } from "./entities.js";
 import { STEAM_MAX_SOURCE_BYTES, STEAM_MAX_TOKENS } from "./steam-tokenizer.js";
 
 export const STEAM_PLAINTEXT_PARSER_VERSION = "1.0.0";
@@ -9,18 +10,7 @@ const BULLET_PREFIX = /^(?:[-\u2013\u2014\u2022]|\[\*\])\s+/;
 const BRACKET_HEADER = /^\[\s*([^\]=/]+?)\s*\]$/;
 
 function cleanSemanticText(value: string): string {
-  return value
-    .replace(/&(?:#(\d+)|#x([0-9a-f]+)|lt|gt|quot|apos|amp);/gi, (entity, decimal, hex) => {
-      if (decimal !== undefined) return String.fromCodePoint(Number.parseInt(decimal, 10));
-      if (hex !== undefined) return String.fromCodePoint(Number.parseInt(hex, 16));
-      switch (entity.toLowerCase()) {
-        case "&lt;": return "<";
-        case "&gt;": return ">";
-        case "&quot;": return '"';
-        case "&apos;": return "'";
-        default: return "&";
-      }
-    })
+  return decodeSteamEntities(value)
     .replace(/https?:\/\/\S+/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
