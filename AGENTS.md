@@ -1,3 +1,50 @@
+<!-- REBUILD-SUMMARY-START -->
+
+## Active Direction: Markdown Rebuild
+
+This project is being **rebuilt ground-up** on a "one page = one Markdown file"
+model, replacing the earlier canonical document/block/fragment model +
+Meilisearch + archive-run machinery (which was ~5–10x heavier than a 274-document
+corpus warrants). Detailed handoff: `.planning/REBUILD-DESIGN.md` (local; read it
+before working on the rebuild).
+
+**Where the GSD-managed sections below (Technology Stack, GSD Workflow Enforcement)
+conflict with this summary, this summary wins — they describe the superseded
+implementation (Meilisearch, canonical block model, phase-gated workflow).**
+
+**Architecture (non-negotiable decisions):**
+
+- **A separate content repo is the source of truth.** The corpus lives in its own
+  git repo (`cs-patchnotes-content`) holding `raw/` (Steam BBCode/plain + archived
+  HTML) and `content/notes/*.md` (converted, hand-editable). This code repo holds
+  the pipeline/app and treats the content repo as an external input via config
+  (`CONTENT_DIR`, default a sibling checkout — plain checkout, not a submodule).
+  The corpus is reproducible and self-backing; committing raw archived HTML means
+  the fragile Wayback source is captured once — we never re-scrape it.
+- **The database / search index is derived and disposable** — rebuilt from the git
+  files on demand, never backed up. Search engine choice is **deferred**; the index
+  is built through a pluggable seam from the `.md` corpus.
+- **The core pipeline is file-in/file-out, no DB dependency.** "Raw" = the closest
+  faithful capture per source, verbatim; normalization to Markdown is the
+  converter's job.
+
+**Regen-safety:** each `.md` carries provenance frontmatter (`source_sha256`,
+`converter_version`, `generated_sha256`). Re-parse compares the on-disk body hash
+to `generated_sha256` to decide preserve / overwrite / flag-conflict, so a
+converter fix can regenerate many files without clobbering hand-edits. Permanent
+one-offs live in `overrides/<gid>.md` (used verbatim, skips conversion).
+
+**Build order:** seed raw store → converter (raw→md) with fixtures + regen-safety
+→ derived index + minimal search API/UI → live Steam ingest → best-effort archive
+capture → classification → search-UX → incremental poller. v1 is **patch_notes
+only** (supplemental release-articles/relationships deferred to v2).
+
+**Env gotcha:** host `node_modules` is root-owned and `better-sqlite3` is
+ABI-mismatched — run anything needing the legacy DB inside the Node 22 image
+(`cs-patchnotes-phase-02.2-verify`); the new core pipeline avoids native deps.
+
+<!-- REBUILD-SUMMARY-END -->
+
 <!-- GSD:project-start source:PROJECT.md -->
 
 ## Project
