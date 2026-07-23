@@ -19,3 +19,6 @@ build/
 *.db-shm
 *.db-wal
 .opencode/
+
+# Disposable corpus search artifacts
+.cache/

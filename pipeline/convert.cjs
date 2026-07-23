@@ -4,7 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const CONVERTER_VERSION = 2;
+const CONVERTER_VERSION = 3;
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
 
 function sha256(value) {
@@ -69,11 +69,12 @@ function toMarkdown(body) {
   let output = body.replace(/\r\n?/g, "\n");
   output = output.replace(/\{STEAM_CLAN_IMAGE\}/g, "https://clan.cloudflare.steamstatic.com/images");
 
-  output = output.replace(/\[img=([^\]]+)\]\s*\[\/img\]/gi, "![]($1)");
+  output = output.replace(/\[img=([^\]]+)\]\s*\[\/img\]/gi, (_match, source) => `![](${source.trim().replace(/^["']|["']$/g, "")})`);
   output = output.replace(/\[img\]([^\[]+?)\[\/img\]/gi, (_match, source) => `![](${source.trim()})`);
   output = output.replace(/\[url=([^\]]+)\]([\s\S]*?)\[\/url\]/gi, (_match, href, text) => {
     const label = text.trim();
-    return label ? `[${label}](${href})` : `<${href}>`;
+    const url = href.trim().replace(/^["']|["']$/g, "");
+    return label ? `[${label}](${url})` : `<${url}>`;
   });
   output = output.replace(/\[url\]([\s\S]*?)\[\/url\]/gi, (_match, href) => `<${href.trim()}>`);
 
@@ -90,6 +91,7 @@ function toMarkdown(body) {
   );
   output = output.replace(/\[\/?list\]/gi, "\n");
   output = output.replace(/^\s*\[\*\]\s?/gim, "- ");
+  output = output.replace(/\[\/?\*\]/g, "");
   output = output.replace(/^\s*Release Notes for .+$/gim, "");
   output = output.replace(/\[\/?[a-z][a-z0-9]*(?:=[^\]]+)?\]/gi, "");
   output = decodeEntities(output);
