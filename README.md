@@ -63,6 +63,10 @@ deploy:cloudflare` as its deploy command. TanStack Start writes the deployable
 Worker bundle and client assets to `packages/archive/dist/server` and
 `packages/archive/dist/client` respectively.
 
-Set the Worker runtime variable `API_URL` to the public origin of the archive
-read API. The Worker proxies browser `/api/*` requests to that API; no content
-checkout or generated corpus index is needed in the Cloudflare build.
+Use `npm run version:cloudflare` as the Worker Builds version command. Both
+upload scripts preserve dashboard variables and deploy the generated Start
+bundle instead of rebundling the source entry.
+
+`API_URL` defaults to the public archive API origin in `wrangler.jsonc`. The
+Worker proxies browser `/api/*` requests to that API; no content checkout or
+generated corpus index is needed in the Cloudflare build.
