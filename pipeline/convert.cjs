@@ -4,7 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const CONVERTER_VERSION = 1;
+const CONVERTER_VERSION = 2;
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
 
 function sha256(value) {
@@ -52,16 +52,17 @@ function titleCaseSection(name) {
 }
 
 function normalizeBullet(line) {
-  if (/^\s*---\s+/.test(line)) {
-    return line.replace(/^\s*---\s+/, "    - ");
+  const withoutTrailingWhitespace = line.trimEnd();
+  if (/^\s*---\s+/.test(withoutTrailingWhitespace)) {
+    return withoutTrailingWhitespace.replace(/^\s*---\s+/, "    - ");
   }
-  if (/^\s*--\s+/.test(line)) {
-    return line.replace(/^\s*--\s+/, "  - ");
+  if (/^\s*--\s+/.test(withoutTrailingWhitespace)) {
+    return withoutTrailingWhitespace.replace(/^\s*--\s+/, "  - ");
   }
-  if (/^\s*-\s+/.test(line)) {
-    return line.replace(/^\s*-\s+/, "- ");
+  if (/^\s*-\s+/.test(withoutTrailingWhitespace)) {
+    return withoutTrailingWhitespace.replace(/^\s*-\s+/, "- ");
   }
-  return line.trim();
+  return withoutTrailingWhitespace.trim();
 }
 
 function toMarkdown(body) {
