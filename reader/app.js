@@ -57,27 +57,27 @@ function renderResults() {
   resultCount.textContent = `${results.length} note${results.length === 1 ? "" : "s"}`;
   clearButton.hidden = !(queryInput.value || gameFilter.value);
 
-  for (const document of results) {
+  for (const note of results) {
     const item = document.createElement("li");
     const button = document.createElement("button");
     button.className = "result-card";
     button.type = "button";
-    button.dataset.selected = String(document.id === selectedId);
+    button.dataset.selected = String(note.id === selectedId);
     button.addEventListener("click", () => {
-      selectedId = document.id;
+      selectedId = note.id;
       updateUrl();
       renderResults();
-      renderNote(document);
+      renderNote(note);
     });
 
     const meta = document.createElement("p");
     meta.className = "result-meta";
-    meta.textContent = `${document.date} / ${document.game === "cs2" ? "CS2" : "CS:GO"}`;
+    meta.textContent = `${note.date} / ${note.game === "cs2" ? "CS2" : "CS:GO"}`;
     const title = document.createElement("h2");
-    title.textContent = document.title;
+    title.textContent = note.title;
     const preview = document.createElement("p");
     preview.className = "result-preview";
-    preview.textContent = excerpt(document, queryInput.value);
+    preview.textContent = excerpt(note, queryInput.value);
     button.append(meta, title, preview);
     item.append(button);
     resultsElement.append(item);
@@ -121,8 +121,8 @@ function inlineText(value) {
   return fragment;
 }
 
-function renderNote(document) {
-  if (!document) {
+function renderNote(note) {
+  if (!note) {
     noteElement.replaceChildren(emptyState.content.cloneNode(true));
     return;
   }
@@ -130,12 +130,12 @@ function renderNote(document) {
   header.className = "note-header";
   const meta = document.createElement("p");
   meta.className = "eyebrow";
-  meta.textContent = `${document.date} / ${document.game === "cs2" ? "Counter-Strike 2" : "Counter-Strike: Global Offensive"}`;
+  meta.textContent = `${note.date} / ${note.game === "cs2" ? "Counter-Strike 2" : "Counter-Strike: Global Offensive"}`;
   const title = document.createElement("h1");
-  title.textContent = document.title;
+  title.textContent = note.title;
   const source = document.createElement("a");
   source.className = "source-link";
-  source.href = document.source_url;
+  source.href = note.source_url;
   source.target = "_blank";
   source.rel = "noreferrer";
   source.textContent = "View original Steam post";
@@ -143,8 +143,8 @@ function renderNote(document) {
 
   const body = document.createElement("div");
   body.className = "note-body";
-  for (const line of document.body.split("\n")) {
-    if (!line || line === `# ${document.title}`) continue;
+  for (const line of note.body.split("\n")) {
+    if (!line || line === `# ${note.title}`) continue;
     const heading = line.match(/^(#{2,3})\s+(.+)$/);
     const bullet = line.match(/^(\s*)-\s+(.+)$/);
     const element = document.createElement(heading ? `h${heading[1].length}` : bullet ? "p" : "p");
