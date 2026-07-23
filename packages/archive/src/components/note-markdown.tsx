@@ -1,6 +1,19 @@
 import Markdown, { type Components } from "react-markdown";
 
 const sourceActionLabel = "VIEW ORIGINAL STEAM POST ↗";
+const outboundLinkAttributes = {
+  target: "_blank",
+  rel: "noopener noreferrer",
+} as const;
+
+type NoteMarkdownProps = {
+  body: string;
+  title: string;
+};
+
+type SourceActionProps = {
+  href: string;
+};
 
 export function bodyForRender(body: string, title: string): string {
   const duplicateTitle = `# ${title}`;
@@ -31,14 +44,14 @@ const markdownComponents = {
     if (!safeHref) return <>{children}</>;
 
     return (
-      <a className="note-link" href={safeHref} target="_blank" rel="noopener noreferrer">
+      <a className="note-link" href={safeHref} {...outboundLinkAttributes}>
         {children} <span className="link-domain">[{new URL(safeHref).hostname}]</span>
       </a>
     );
   },
 } satisfies Components;
 
-export function NoteMarkdown({ body, title }: { body: string; title: string }) {
+export function NoteMarkdown({ body, title }: NoteMarkdownProps) {
   return (
     <Markdown components={markdownComponents} urlTransform={safeWebHref}>
       {bodyForRender(body, title)}
@@ -46,13 +59,13 @@ export function NoteMarkdown({ body, title }: { body: string; title: string }) {
   );
 }
 
-export function SourceAction({ href }: { href: string }) {
+export function SourceAction({ href }: SourceActionProps) {
   const safeHref = safeWebHref(href);
 
   if (!safeHref) return <span className="source-link">{sourceActionLabel}</span>;
 
   return (
-    <a className="source-link" href={safeHref} target="_blank" rel="noopener noreferrer">
+    <a className="source-link" href={safeHref} {...outboundLinkAttributes}>
       {sourceActionLabel}
     </a>
   );
