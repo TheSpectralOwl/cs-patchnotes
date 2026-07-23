@@ -4,7 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const CONVERTER_VERSION = 3;
+const CONVERTER_VERSION = 5;
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
 
 function sha256(value) {
@@ -67,6 +67,7 @@ function normalizeBullet(line) {
 
 function toMarkdown(body) {
   let output = body.replace(/\r\n?/g, "\n");
+  output = output.replace(/\\(?=[\[\]])/g, "");
   output = output.replace(/\{STEAM_CLAN_IMAGE\}/g, "https://clan.cloudflare.steamstatic.com/images");
 
   output = output.replace(/\[img=([^\]]+)\]\s*\[\/img\]/gi, (_match, source) => `![](${source.trim().replace(/^["']|["']$/g, "")})`);
@@ -81,6 +82,7 @@ function toMarkdown(body) {
   output = output.replace(/\[h([1-3])\]([\s\S]*?)\[\/h\1\]/gi, (_match, level, text) => {
     return `\n${"#".repeat(Number(level))} ${text.trim()}\n`;
   });
+  output = output.replace(/\[\/?p\]/gi, "\n");
   output = output.replace(/\[b\]([\s\S]*?)\[\/b\]/gi, (_match, text) => `**${text.trim()}**`);
   output = output.replace(/\[i\]([\s\S]*?)\[\/i\]/gi, (_match, text) => `*${text.trim()}*`);
   output = output.replace(/\[u\]([\s\S]*?)\[\/u\]/gi, (_match, text) => text.trim());

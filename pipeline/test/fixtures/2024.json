@@ -7,5 +7,5 @@
   "body_format": "bbcode",
   "source_url": "https://example.test/2024",
   "body_sha256": "fixture",
-  "body": "[ DAMAGE PREDICTION ][list]\n[*] Added damage prediction.[/*]\n[*] Workshop: [url=\"https://example.test/workshop\"][/url][/*]\n[/list]\n\n[ MAPS ]\n[list]\n[*] Updated a map.[/*]\n[/list]"
+  "body": "[ DAMAGE PREDICTION ][list]\n[*] Added damage prediction.[/*]\n[*] Workshop: [url=\"https://example.test/workshop\"][/url][/*]\n[/list]\n\n[p]\\[ MAPS ][/p]\n[list]\n[*] Updated a map.[/*]\n[/list]"
 }
