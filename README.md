@@ -2,7 +2,7 @@
 
 The pipeline reads and writes the sibling `cs-patchnotes-content` repository.
 That repository is the source of truth: `raw/steam/` contains immutable Steam
-captures and `content/notes/` contains hand-editable Markdown.
+captures and `content/notes/` contains hand-editable Markdown. 
 
 Set `CONTENT_DIR` to use another checkout; by default commands use
 `../cs-patchnotes-content`.
