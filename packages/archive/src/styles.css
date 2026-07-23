@@ -1,3 +1,5 @@
+@import "@fontsource-variable/eb-garamond";
+
 :root {
   --page: #15171b;
   --surface: #1e2127;
@@ -10,7 +12,8 @@
   --neutral-swatch: #7a828c;
   color: var(--text);
   background: var(--page);
-  font-family: system-ui, sans-serif;
+  font-family: "EB Garamond Variable", "EB Garamond", Garamond, Georgia, serif;
+  font-optical-sizing: auto;
   font-synthesis: none;
 }
 
@@ -173,7 +176,7 @@ button { cursor: pointer; }
 .note-body h1,
 .note-body h2,
 .note-body h3 {
-  font-family: Iowan Old Style, Baskerville, Times New Roman, serif;
+  font-family: "EB Garamond Variable", "EB Garamond", Garamond, Georgia, serif;
   font-weight: 500;
 }
 
