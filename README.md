@@ -55,9 +55,9 @@ content repository has a remote, run that workflow with its `owner/repository`
 and ref inputs. A private content repository requires `CONTENT_REPO_TOKEN` with
 read access to that repository.
 
-The archive app includes a Cloudflare Pages `_redirects` fallback for direct
-`/notes/<filename>` links. Any other static host must provide the equivalent
-SPA fallback before publishing the app.
+The root Worker configuration provides a Worker-native SPA fallback for direct
+`/notes/<filename>` links. Any other static host must provide an equivalent
+fallback before publishing the app.
 
 ## Cloudflare Worker deployment
 

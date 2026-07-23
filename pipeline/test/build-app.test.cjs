@@ -18,9 +18,9 @@ test("builds the application corpus only from Markdown notes", () => {
   assert.equal(JSON.parse(fs.readFileSync(indexPath, "utf8")).documents[0].title, "Example");
 });
 
-test("includes a static-host fallback for direct note links", () => {
+test("uses the Worker-native SPA fallback for direct note links", () => {
   assert.match(
-    fs.readFileSync(path.join(__dirname, "../../packages/archive/public/_redirects"), "utf8"),
-    /^\/notes\/\* \/index\.html 200$/m,
+    fs.readFileSync(path.join(__dirname, "../../wrangler.jsonc"), "utf8"),
+    /"not_found_handling": "single-page-application"/,
   );
 });
