@@ -1,5 +1,6 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState } from "react";
+import { NoteMarkdown, SourceAction } from "../../components/note-markdown";
 
 type Note = { title: string; date: string; game: string; source_url: string; body: string };
 
@@ -16,13 +17,7 @@ function NotePage() {
   if (error) return <main className="archive-shell"><p className="state error">{error}</p></main>;
   if (!note) return <main className="archive-shell"><p className="state">Loading note...</p></main>;
   return <main className="archive-shell note-page"><header className="masthead"><Link to="/" className="wordmark">CS PATCH NOTES</Link><Link to="/">BACK TO ARCHIVE</Link></header><article>
-    <p className="eyebrow">{note.date} / {note.game === "cs2" ? "COUNTER-STRIKE 2" : "COUNTER-STRIKE: GLOBAL OFFENSIVE"}</p><h1>{note.title}</h1><a className="source-link" href={note.source_url} target="_blank" rel="noreferrer">VIEW ORIGINAL STEAM POST ↗</a>
-    <div className="note-body">{note.body.split("\n").map((line, index) => {
-      if (!line || line === `# ${note.title}`) return null;
-      const heading = line.match(/^(#{2,3})\s+(.+)$/); const bullet = line.match(/^(\s*)-\s+(.+)$/);
-      if (heading) { const Tag = heading[1].length === 2 ? "h2" : "h3"; return <Tag key={index}>{heading[2]}</Tag>; }
-      if (bullet) return <p className="bullet" style={{ "--depth": Math.floor(bullet[1].length / 2) } as CSSProperties} key={index}>{bullet[2]}</p>;
-      return <p key={index}>{line}</p>;
-    })}</div>
+    <p className="eyebrow">{note.date} / {note.game === "cs2" ? "COUNTER-STRIKE 2" : "COUNTER-STRIKE: GLOBAL OFFENSIVE"}</p><h1>{note.title}</h1><SourceAction href={note.source_url} />
+    <div className="note-body"><NoteMarkdown body={note.body} title={note.title} /></div>
   </article></main>;
 }
