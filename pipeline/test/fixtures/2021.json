@@ -1,0 +1,11 @@
+{
+  "gid": "2021",
+  "title": "Release Notes for 1/7/2021",
+  "date": "2021-01-08",
+  "game": "csgo",
+  "content_kind": "patch_notes",
+  "body_format": "plain_text",
+  "source_url": "https://example.test/2021",
+  "body_sha256": "fixture",
+  "body": "[ GAMEPLAY ]\n- Updated UI and SDK behavior.\n\n[ CS:GO SDK ]\n- Improved API support.\n"
+}

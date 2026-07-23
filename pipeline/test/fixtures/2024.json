@@ -1,0 +1,11 @@
+{
+  "gid": "2024",
+  "title": "Counter-Strike 2 Update",
+  "date": "2024-11-13",
+  "game": "cs2",
+  "content_kind": "patch_notes",
+  "body_format": "bbcode",
+  "source_url": "https://example.test/2024",
+  "body_sha256": "fixture",
+  "body": "[ DAMAGE PREDICTION ][list]\n[*] Added damage prediction.\n[*] Workshop: [url=https://example.test/workshop][/url]\n[/list]\n\n[ MAPS ]\n[list]\n[*] Updated a map.\n[/list]"
+}

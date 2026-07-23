@@ -1,0 +1,11 @@
+{
+  "gid": "2013",
+  "title": "CS:GO SDK Update",
+  "date": "2013-12-19",
+  "game": "csgo",
+  "content_kind": "patch_notes",
+  "body_format": "bbcode",
+  "source_url": "https://example.test/2013",
+  "body_sha256": "fixture",
+  "body": "[url=https://example.test/image][img=https://example.test/image.png][/img][/url]\r\n\r\nRelease Notes for 12/19/2013\r\n\r\n[ CSGO ]\r\n- Top level\r\n-- Nested\r\n--- Double nested\r\n"
+}
