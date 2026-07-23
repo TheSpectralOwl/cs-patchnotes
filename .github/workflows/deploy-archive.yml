@@ -19,8 +19,13 @@ jobs:
             set -euo pipefail
             archive_dir="$HOME/cs-patchnotes-archive"
             content_dir="$HOME/cs-patchnotes-content"
-            if [ ! -d "$archive_dir/.git" ]; then
+            if [ ! -d "$archive_dir" ]; then
               git clone --branch main https://github.com/TheSpectralOwl/cs-patchnotes.git "$archive_dir"
+            elif [ ! -d "$archive_dir/.git" ]; then
+              git -C "$archive_dir" init --quiet
+              git -C "$archive_dir" remote add origin https://github.com/TheSpectralOwl/cs-patchnotes.git
+              git -C "$archive_dir" fetch --quiet origin main
+              git -C "$archive_dir" switch --quiet --track -c main origin/main
             else
               git -C "$archive_dir" fetch --quiet origin main
               git -C "$archive_dir" switch main
