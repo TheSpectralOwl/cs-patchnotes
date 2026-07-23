@@ -10,6 +10,7 @@ RUN npm run build -w @cs-patchnotes/archive-api
 
 FROM node:22.23.1-bookworm-slim AS runtime
 ENV NODE_ENV=production
+ENV CONTENT_DIR=/content
 WORKDIR /app
 
 COPY --from=build /app/node_modules ./node_modules
