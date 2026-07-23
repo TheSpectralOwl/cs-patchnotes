@@ -67,6 +67,6 @@ Use `npm run version:cloudflare` as the Worker Builds version command. Both
 upload scripts preserve dashboard variables and deploy the generated Start
 bundle instead of rebundling the source entry.
 
-`API_URL` defaults to the public archive API origin in `wrangler.jsonc`. The
-Worker proxies browser `/api/*` requests to that API; no content checkout or
-generated corpus index is needed in the Cloudflare build.
+Set the Worker runtime variable `API_URL` to the public origin of the archive
+read API. The Worker proxies browser `/api/*` requests to that API; no content
+checkout or generated corpus index is needed in the Cloudflare build.
