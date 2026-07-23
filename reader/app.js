@@ -31,6 +31,7 @@ function search() {
 
   return [...scores]
     .map(([documentId, score]) => ({ ...index.documents[documentId], score }))
+    .filter((document) => !document.duplicate_of)
     .filter((document) => !selectedGame || document.game === selectedGame)
     .sort((a, b) => b.score - a.score || b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
 }
@@ -162,7 +163,10 @@ function renderNote(note) {
 
 function refresh() {
   const results = renderResults();
-  const selected = results.find((document) => document.id === selectedId);
+  const requested = index.documents.find((document) => document.id === selectedId);
+  const selected = requested?.duplicate_of
+    ? index.documents.find((document) => document.id === requested.duplicate_of)
+    : results.find((document) => document.id === selectedId);
   if (!selected && selectedId) selectedId = null;
   renderNote(selected || results[0]);
 }

@@ -32,6 +32,7 @@ function loadNotes(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR) 
         game: frontmatter.game,
         steam_gid: frontmatter.steam_gid,
         source_url: frontmatter.source_url,
+        source_sha256: frontmatter.source_sha256,
         body,
       };
     });
@@ -39,6 +40,19 @@ function loadNotes(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR) 
 
 function buildIndex(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR, indexPath = DEFAULT_INDEX_PATH) {
   const documents = loadNotes(contentDir);
+  const canonicalBySourceHash = new Map();
+  for (const document of documents) {
+    if (!document.source_sha256) continue;
+    const canonical = canonicalBySourceHash.get(document.source_sha256);
+    if (!canonical || document.steam_gid.localeCompare(canonical.steam_gid) < 0) {
+      canonicalBySourceHash.set(document.source_sha256, document);
+    }
+  }
+  for (const document of documents) {
+    const canonical = document.source_sha256 && canonicalBySourceHash.get(document.source_sha256);
+    if (canonical && canonical.id !== document.id) document.duplicate_of = canonical.id;
+  }
+
   const terms = {};
   documents.forEach((document, documentId) => {
     const frequencies = new Map();
@@ -75,6 +89,7 @@ function searchIndex(index, query, filters = {}) {
 
   return [...scores]
     .map(([documentId, score]) => ({ ...index.documents[documentId], score }))
+    .filter((document) => !document.duplicate_of)
     .filter((document) => !filters.game || document.game === filters.game)
     .filter((document) => !filters.from || document.date >= filters.from)
     .filter((document) => !filters.to || document.date <= filters.to)

@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 type Game = "csgo" | "cs2";
-type Note = { id: string; title: string; date: string; game: Game; steam_gid: string; source_url: string; body: string };
+type Note = { id: string; title: string; date: string; game: Game; steam_gid: string; source_url: string; body: string; duplicate_of?: string };
 type Index = { documents: Note[]; terms: Record<string, Array<[number, number]>> };
 
 function tokens(value: string) {
@@ -33,6 +33,7 @@ function search(index: Index, query: string, game: string) {
   }
   return [...scores]
     .map(([id, score]) => ({ ...index.documents[id], score }))
+    .filter((note) => !note.duplicate_of)
     .filter((note) => !game || note.game === game)
     .sort((a, b) => b.score - a.score || b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
 }
@@ -93,7 +94,10 @@ function App() {
     setLocation({ noteId, query: nextQuery.trim(), game: nextGame as Game | "" });
   }
   const results = index ? search(index, deferredQuery, game) : [];
-  const selected = index?.documents.find((note) => note.id === location.noteId) ?? results[0];
+  const requested = index?.documents.find((note) => note.id === location.noteId);
+  const selected = requested?.duplicate_of
+    ? index?.documents.find((note) => note.id === requested.duplicate_of)
+    : requested ?? results[0];
 
   return <>
     <header className="topbar"><button className="wordmark" onClick={() => navigate(null)}>CS <span>PATCH NOTES</span></button><p>OFFICIAL CHANGELOG ARCHIVE</p></header>
