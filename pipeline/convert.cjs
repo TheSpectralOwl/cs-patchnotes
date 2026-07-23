@@ -4,7 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const CONVERTER_VERSION = 5;
+const CONVERTER_VERSION = 6;
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
 
 function sha256(value) {
@@ -82,7 +82,7 @@ function toMarkdown(body) {
   output = output.replace(/\[h([1-3])\]([\s\S]*?)\[\/h\1\]/gi, (_match, level, text) => {
     return `\n${"#".repeat(Number(level))} ${text.trim()}\n`;
   });
-  output = output.replace(/\[\/?p\]/gi, "\n");
+  output = output.replace(/\[\/p\]|\[p(?:[ \t][^\]]*|=[^\]]*)?\]/gi, "\n");
   output = output.replace(/\[b\]([\s\S]*?)\[\/b\]/gi, (_match, text) => `**${text.trim()}**`);
   output = output.replace(/\[i\]([\s\S]*?)\[\/i\]/gi, (_match, text) => `*${text.trim()}*`);
   output = output.replace(/\[u\]([\s\S]*?)\[\/u\]/gi, (_match, text) => text.trim());
