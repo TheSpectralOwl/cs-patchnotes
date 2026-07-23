@@ -6,6 +6,7 @@ on:
       - ".github/workflows/corpus.yml"
       - "package.json"
       - "package-lock.json"
+      - "wrangler.jsonc"
       - "pipeline/**"
       - "reader/**"
       - "packages/archive/**"
@@ -14,6 +15,7 @@ on:
       - ".github/workflows/corpus.yml"
       - "package.json"
       - "package-lock.json"
+      - "wrangler.jsonc"
       - "pipeline/**"
       - "reader/**"
       - "packages/archive/**"
@@ -45,6 +47,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run test:pipeline
       - run: npm run check -w @cs-patchnotes/archive
+      - run: npm run build:cloudflare
 
   corpus:
     name: Verify content and build archive

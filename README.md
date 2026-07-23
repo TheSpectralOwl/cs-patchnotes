@@ -58,3 +58,13 @@ read access to that repository.
 The archive app includes a Cloudflare Pages `_redirects` fallback for direct
 `/notes/<filename>` links. Any other static host must provide the equivalent
 SPA fallback before publishing the app.
+
+## Cloudflare Worker deployment
+
+The root `wrangler.jsonc` deploys the archive app as static assets through the
+existing `cs-patchnotes-web` Worker. Configure the Git-connected Worker build
+with the repository root as its root directory and `npm run build:cloudflare`
+as its build command. The command clones the public content repository at
+`main` into a temporary directory, builds the app with that checkout, and then
+removes the temporary copy. Set `CONTENT_REPOSITORY` or `CONTENT_REF` in the
+Worker build environment to deploy a different public checkout or ref.

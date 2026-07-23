@@ -13,6 +13,7 @@
     "test": "npm test --workspaces --if-present",
     "build": "npm run build -w packages/shared && npm run build --workspaces --if-present",
     "build:archive": "npm run build -w @cs-patchnotes/archive",
+    "build:cloudflare": "node pipeline/build-cloudflare.cjs",
     "test:pipeline": "node --test pipeline/test/*.test.cjs",
     "verify:corpus": "node pipeline/verify.cjs",
     "update:steam": "node pipeline/update-steam.cjs",
