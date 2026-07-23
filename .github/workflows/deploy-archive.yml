@@ -1,0 +1,51 @@
+name: Deploy Archive API
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/archive-api/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/cs-patchnotes-archive-api:latest
+            ghcr.io/${{ github.repository_owner }}/cs-patchnotes-archive-api:${{ github.sha }}
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -euo pipefail
+            archive_dir="$HOME/cs-patchnotes-archive"
+            content_dir="$HOME/cs-patchnotes-content"
+            if [ ! -d "$archive_dir/.git" ]; then
+              git clone --branch markdown-notes-rebuild https://github.com/TheSpectralOwl/cs-patchnotes.git "$archive_dir"
+            else
+              git -C "$archive_dir" fetch --quiet origin markdown-notes-rebuild
+              git -C "$archive_dir" reset --hard origin/markdown-notes-rebuild
+            fi
+            if [ ! -d "$content_dir/.git" ]; then
+              git clone --branch main https://github.com/TheSpectralOwl/cs-patchnotes-content.git "$content_dir"
+            else
+              git -C "$content_dir" pull --ff-only
+            fi
+            test -f "$archive_dir/.env"
+            cd "$archive_dir"
+            CONTENT_HOST_DIR="$content_dir" docker compose -f docker-compose.archive.yml --profile vps pull
+            CONTENT_HOST_DIR="$content_dir" docker compose -f docker-compose.archive.yml --profile vps up -d
