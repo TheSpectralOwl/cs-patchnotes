@@ -22,3 +22,4 @@ build/
 
 # Disposable corpus search artifacts
 .cache/
+packages/archive/public/notes-index.json

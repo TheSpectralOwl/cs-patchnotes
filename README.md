@@ -22,6 +22,9 @@ node pipeline/search.cjs build
 # Build the static reader site in .cache/reader/.
 node pipeline/build-reader.cjs
 
+# Build the production archive app in packages/archive/dist/.
+npm run build:archive
+
 # Query the local index.
 node pipeline/search.cjs query "smoke" --game cs2 --from 2024-01-01
 

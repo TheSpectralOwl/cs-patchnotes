@@ -12,6 +12,7 @@
     "prepare": "git config core.hooksPath .githooks || true",
     "test": "npm test --workspaces --if-present",
     "build": "npm run build -w packages/shared && npm run build --workspaces --if-present",
+    "build:archive": "npm run build -w @cs-patchnotes/archive",
     "dev": "npm run dev -w packages/api",
     "check:secrets": "bash scripts/check-no-secrets.sh",
     "check:meili-port": "bash scripts/check-no-meili-port.sh",
