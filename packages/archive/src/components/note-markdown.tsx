@@ -44,9 +44,10 @@ const markdownComponents = {
     if (!safeHref) return <>{children}</>;
 
     return (
-      <a {...anchorProps} className="note-link" href={safeHref} {...outboundLinkAttributes}>
-        {children} <span className="link-domain">[{new URL(safeHref).hostname}]</span>
-      </a>
+      <>
+        <a {...anchorProps} className="note-link" href={safeHref} {...outboundLinkAttributes}>{children}</a>{" "}
+        <sub className="link-domain">[{new URL(safeHref).hostname}]</sub>
+      </>
     );
   },
 } satisfies Components;

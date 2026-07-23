@@ -69,7 +69,7 @@ Follow-up paragraph.`);
     expect(markup).toContain(`href="${destination}"`);
     expect(markup).toContain('target="_blank"');
     expect(markup).toContain('rel="noopener noreferrer"');
-    expect(markup).toContain(`Read the update <span class="link-domain">[${hostname}]</span>`);
+    expect(markup).toContain(`>Read the update</a> <sub class="link-domain">[${hostname}]</sub>`);
   });
 
   it("preserves an accepted link's authored title", () => {
