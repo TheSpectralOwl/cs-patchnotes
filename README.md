@@ -19,6 +19,9 @@ node pipeline/convert.cjs
 # Build the disposable Markdown-derived search index.
 node pipeline/search.cjs build
 
+# Build the static reader site in .cache/reader/.
+node pipeline/build-reader.cjs
+
 # Query the local index.
 node pipeline/search.cjs query "smoke" --game cs2 --from 2024-01-01
 

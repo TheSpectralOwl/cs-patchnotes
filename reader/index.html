@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="A searchable archive of Counter-Strike patch notes." />
+    <title>CS Patch Notes Archive</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="masthead">
+      <a class="brand" href="./" aria-label="CS Patch Notes home">CS <span>PATCH NOTES</span></a>
+      <p class="masthead-note">Official changes, preserved.</p>
+    </header>
+    <main class="archive">
+      <section class="search-deck" aria-labelledby="archive-heading">
+        <p class="eyebrow">Counter-Strike archive</p>
+        <h1 id="archive-heading">Find the change.<br /><em>Read the context.</em></h1>
+        <div class="search-controls">
+          <label class="query-control">
+            <span class="sr-only">Search all patch notes</span>
+            <input id="query" type="search" placeholder="Try ‘smoke’, ‘Overpass’, or ‘Premier’" autocomplete="off" />
+          </label>
+          <label class="filter-control">
+            <span>Game</span>
+            <select id="game-filter">
+              <option value="">All eras</option>
+              <option value="cs2">Counter-Strike 2</option>
+              <option value="csgo">CS:GO</option>
+            </select>
+          </label>
+        </div>
+      </section>
+      <section class="workspace" aria-live="polite">
+        <aside class="result-pane">
+          <div class="result-bar">
+            <p id="result-count">Loading archive...</p>
+            <button id="clear-search" type="button" hidden>Clear search</button>
+          </div>
+          <ol id="results" class="results"></ol>
+        </aside>
+        <article id="note" class="note-pane" aria-label="Patch note"></article>
+      </section>
+    </main>
+    <template id="empty-state">
+      <div class="empty-state">
+        <p class="eyebrow">No result selected</p>
+        <h2>Search the archive</h2>
+        <p>Open a result to read the full official note, preserved from the Steam source.</p>
+      </div>
+    </template>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
