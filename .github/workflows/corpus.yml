@@ -8,8 +8,8 @@ on:
       - "package-lock.json"
       - "wrangler.jsonc"
       - "pipeline/**"
-      - "reader/**"
       - "packages/archive/**"
+      - "packages/archive-api/**"
   pull_request:
     paths:
       - ".github/workflows/corpus.yml"
@@ -17,8 +17,8 @@ on:
       - "package-lock.json"
       - "wrangler.jsonc"
       - "pipeline/**"
-      - "reader/**"
       - "packages/archive/**"
+      - "packages/archive-api/**"
   workflow_dispatch:
     inputs:
       content_repository:

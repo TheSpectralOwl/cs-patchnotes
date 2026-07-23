@@ -1,20 +1,17 @@
 # Archive VPS Deployment
 
-The archive API runs independently from the legacy stack. It reads a read-only
-checkout of `cs-patchnotes-content` and has no SQLite or Meilisearch volume.
+The archive API reads a read-only checkout of `cs-patchnotes-content` and has no
+database or search-index volume.
 
 ## One-time VPS setup
 
-1. Keep the current `~/cs-patchnotes` deployment and its compose stack intact.
-   The new stack uses `~/cs-patchnotes-archive`, so rollback remains possible.
-2. Create `~/cs-patchnotes-archive/.env` with the existing `TUNNEL_TOKEN` and a
+1. Create `~/cs-patchnotes-archive/.env` with the existing `TUNNEL_TOKEN` and a
    new, high-entropy `RELOAD_TOKEN`.
-3. In the Cloudflare Tunnel's remote ingress configuration, point the archive API
-   hostname at `http://archive-api:3001`. Stop the legacy `cloudflared` service
-   before starting the new one; a tunnel has only one active connector target.
-4. Set the TanStack Start Worker's runtime `API_URL` variable to that public API
+2. In the Cloudflare Tunnel's remote ingress configuration, point the archive API
+   hostname at `http://archive-api:3001`.
+3. Set the TanStack Start Worker's runtime `API_URL` variable to that public API
    hostname.
-5. Trigger the `Deploy Archive API` GitHub workflow from `markdown-notes-rebuild`.
+4. Trigger the `Deploy Archive API` GitHub workflow from `main`.
 
 The workflow creates or updates two separate checkouts:
 

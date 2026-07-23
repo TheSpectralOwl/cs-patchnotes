@@ -7,7 +7,7 @@ in-memory index. It has no database or search-engine dependency.
 
 ```sh
 CONTENT_DIR=/srv/cs-patchnotes-content \
-RELOAD_TOKEN=replace-with-a-random-secret \
+RELOAD_TOKEN="${RELOAD_TOKEN:?set a random RELOAD_TOKEN}" \
 PORT=3001 \
 npm run start -w @cs-patchnotes/archive-api
 ```
@@ -39,6 +39,6 @@ API is reachable:
 ```sh
 CONTENT_DIR=/srv/cs-patchnotes-content \
 ARCHIVE_API_URL=http://127.0.0.1:3001 \
-RELOAD_TOKEN=replace-with-the-same-random-secret \
+RELOAD_TOKEN="${RELOAD_TOKEN:?set RELOAD_TOKEN}" \
 node tools/refresh-archive-api.cjs
 ```

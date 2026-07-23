@@ -4,7 +4,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { auditCorpus } = require("./audit.cjs");
 const { convertAll } = require("./convert.cjs");
-const { buildIndex } = require("./search.cjs");
 const { fetchAllNews, isPatchNote, toRawRecord } = require("../tools/seed-raw-from-steam.cjs");
 
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
@@ -29,7 +28,6 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   const fetchNews = options.fetchNews || fetchAllNews;
   const convert = options.convert || convertAll;
   const audit = options.audit || auditCorpus;
-  const buildSearchIndex = options.buildSearchIndex || buildIndex;
   const dryRun = options.dryRun || false;
   const rawDir = path.join(contentDir, "raw", "steam");
   const fetched = await fetchNews();
@@ -62,7 +60,6 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   }
   summary.audit = audit(contentDir);
   assertAuditClean(summary.audit);
-  summary.search_index = buildSearchIndex(contentDir);
   return summary;
 }
 
@@ -87,7 +84,6 @@ if (require.main === module) {
           same_day_title_collisions: summary.audit.same_day_title_collisions.length,
         },
       },
-      search_index: summary.search_index,
     }, null, 2));
     if (summary.conflicts.length > 0) process.exitCode = 1;
   }).catch((error) => {

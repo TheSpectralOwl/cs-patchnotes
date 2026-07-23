@@ -16,17 +16,12 @@ node tools/seed-raw-from-steam.cjs
 # Convert raw captures to regen-safe Markdown.
 node pipeline/convert.cjs
 
-# Build the disposable Markdown-derived search index.
-node pipeline/search.cjs build
-
-# Build the static reader site in .cache/reader/.
-node pipeline/build-reader.cjs
-
 # Build the production archive app in packages/archive/dist/.
 npm run build:archive
 
-# Query the local index.
-node pipeline/search.cjs query "smoke" --game cs2 --from 2024-01-01
+# Build and run checks for the file-backed archive API.
+npm run build -w @cs-patchnotes/archive-api
+npm test -w @cs-patchnotes/archive-api
 
 # Verify corpus provenance, coverage, and conversion residue.
 node pipeline/audit.cjs
@@ -34,14 +29,14 @@ node pipeline/audit.cjs
 # Verify a content checkout in an isolated copy without changing it.
 node pipeline/verify.cjs
 
-# Fetch current Steam records, add only unseen raw captures, then convert and rebuild indexes.
+# Fetch current Steam records, add only unseen raw captures, then convert.
 node pipeline/update-steam.cjs
 ```
 
-The index and audit report are written under `.cache/` and are never committed.
-The audit intentionally reports duplicate raw captures and same-day title
-collisions without modifying them: raw records preserve source evidence, while
-any deduplication is a reader/search presentation decision.
+The audit report is written under `.cache/` and is never committed. The audit
+intentionally reports duplicate raw captures and same-day title collisions
+without modifying them: raw records preserve source evidence, while the archive
+API applies any presentation deduplication.
 
 `update:steam` never commits or pushes either repository. Review and commit any
 new raw captures and converted notes in the content repository after a successful

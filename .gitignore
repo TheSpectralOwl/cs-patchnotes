@@ -12,7 +12,7 @@ dist/
 build/
 *.log
 
-# SQLite (source of truth lives on the box, not in repo)
+# Local SQLite artifacts from retired migration tooling
 *.sqlite
 *.sqlite3
 *.db
