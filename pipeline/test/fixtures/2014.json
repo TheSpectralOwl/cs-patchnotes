@@ -1,0 +1,11 @@
+{
+  "gid": "2014",
+  "title": "Counter-Strike: Global Offensive Update Released",
+  "date": "2014-05-21",
+  "game": "csgo",
+  "content_kind": "patch_notes",
+  "body_format": "plain_text",
+  "source_url": "https://example.test/2014",
+  "body_sha256": "fixture",
+  "body": "Release Notes for 5/21/2014\r\n\r\n[SERVERS]\r\n- Added a server option &amp; fixed an issue.\r\n"
+}

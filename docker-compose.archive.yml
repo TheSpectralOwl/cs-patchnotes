@@ -1,0 +1,30 @@
+name: cs-patchnotes-archive
+
+services:
+  archive-api:
+    image: ghcr.io/thespectralowl/cs-patchnotes-archive-api:latest
+    build:
+      context: .
+      dockerfile: packages/archive-api/Dockerfile
+    environment:
+      CONTENT_DIR: /content
+      PORT: 3001
+      RELOAD_TOKEN: ${RELOAD_TOKEN:?set RELOAD_TOKEN in .env}
+    volumes:
+      - ${CONTENT_HOST_DIR:?set CONTENT_HOST_DIR to the content checkout}:/content:ro
+    networks: [internal]
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.2
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    depends_on: [archive-api]
+    networks: [internal]
+    restart: unless-stopped
+    profiles: [vps]
+
+networks:
+  internal:
+    driver: bridge

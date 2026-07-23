@@ -12,10 +12,16 @@ dist/
 build/
 *.log
 
-# SQLite (source of truth lives on the box, not in repo)
+# Local SQLite artifacts from retired migration tooling
 *.sqlite
 *.sqlite3
 *.db
 *.db-shm
 *.db-wal
 .opencode/
+docs/.env
+
+# Disposable corpus search artifacts
+.cache/
+packages/archive/public/notes-index.json
+packages/archive/.wrangler/

@@ -1,0 +1,36 @@
+name: Deploy Archive API
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -euo pipefail
+            archive_dir="$HOME/cs-patchnotes-archive"
+            content_dir="$HOME/cs-patchnotes-content"
+            if [ ! -d "$archive_dir/.git" ]; then
+              git clone --branch main https://github.com/TheSpectralOwl/cs-patchnotes.git "$archive_dir"
+            else
+              git -C "$archive_dir" fetch --quiet origin main
+              git -C "$archive_dir" switch main
+              git -C "$archive_dir" pull --ff-only origin main
+            fi
+            if [ ! -d "$content_dir/.git" ]; then
+              git clone --branch main https://github.com/TheSpectralOwl/cs-patchnotes-content.git "$content_dir"
+            else
+              git -C "$content_dir" pull --ff-only
+            fi
+            test -f "$archive_dir/.env"
+            cd "$archive_dir"
+            CONTENT_HOST_DIR="$content_dir" docker compose -f docker-compose.archive.yml --profile vps up --build -d

@@ -1,0 +1,80 @@
+name: Corpus Pipeline
+
+on:
+  push:
+    paths:
+      - ".github/workflows/corpus.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "wrangler.jsonc"
+      - "pipeline/**"
+      - "packages/archive/**"
+      - "packages/archive-api/**"
+  pull_request:
+    paths:
+      - ".github/workflows/corpus.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "wrangler.jsonc"
+      - "pipeline/**"
+      - "packages/archive/**"
+      - "packages/archive-api/**"
+  workflow_dispatch:
+    inputs:
+      content_repository:
+        description: Content repository in owner/repository form
+        required: true
+        type: string
+      content_ref:
+        description: Content repository branch, tag, or commit
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  code:
+    name: Pipeline and app checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run test:pipeline
+      - run: npm run check -w @cs-patchnotes/archive
+      - run: npm run build -w @cs-patchnotes/archive-api
+      - run: npm test -w @cs-patchnotes/archive-api
+      - run: npm run build:cloudflare
+
+  corpus:
+    name: Verify content and build archive
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.content_repository }}
+          ref: ${{ inputs.content_ref }}
+          path: cs-patchnotes-content
+          token: ${{ secrets.CONTENT_REPO_TOKEN || github.token }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run verify:corpus
+        env:
+          CONTENT_DIR: ${{ github.workspace }}/cs-patchnotes-content
+      - run: npm run build:archive
+        env:
+          CONTENT_DIR: ${{ github.workspace }}/cs-patchnotes-content
+      - uses: actions/upload-artifact@v5
+        with:
+          name: archive-site
+          path: packages/archive/dist
