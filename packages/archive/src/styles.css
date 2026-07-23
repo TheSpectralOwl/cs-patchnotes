@@ -210,19 +210,19 @@ button { cursor: pointer; }
 .note-page article > h1 { margin: 14px 0 24px; font-size: clamp(48px, 7vw, 82px); letter-spacing: -0.055em; line-height: 0.92; }
 .source-link { color: var(--accent); text-decoration: none; }
 .source-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.note-body { margin-top: 52px; }
-.note-body h1 { margin: 54px 0 18px; font-size: clamp(30px, 5vw, 42px); letter-spacing: -0.03em; line-height: 1; }
-.note-body h2 { margin: 46px 0 16px; font-size: 32px; letter-spacing: -0.025em; }
-.note-body h3 { margin: 30px 0 12px; color: var(--text); font-size: 23px; }
-.note-body p { margin: 0 0 20px; color: var(--text); line-height: 1.68; }
+.note-body { margin-top: 40px; }
+.note-body h1 { margin: 44px 0 14px; font-size: clamp(30px, 5vw, 42px); letter-spacing: -0.03em; line-height: 1; }
+.note-body h2 { margin: 34px 0 12px; font-size: 32px; letter-spacing: -0.025em; }
+.note-body h3 { margin: 24px 0 10px; color: var(--text); font-size: 23px; }
+.note-body p { margin: 0 0 14px; color: var(--text); line-height: 1.62; }
 .note-body ul,
-.note-body ol { margin: 20px 0; padding-left: 26px; color: var(--text); }
+.note-body ol { margin: 14px 0; padding-left: 26px; color: var(--text); }
 .note-body ul { list-style: none; }
-.note-body li { padding-left: 2px; overflow-wrap: anywhere; line-height: 1.68; }
+.note-body li { padding-left: 2px; overflow-wrap: anywhere; line-height: 1.62; }
 .note-body ul > li { position: relative; }
 .note-body ul > li::before { content: "-"; position: absolute; left: -18px; color: var(--muted); }
 .note-body li > ul,
-.note-body li > ol { margin: 8px 0 0; }
+.note-body li > ol { margin: 6px 0 0; }
 .note-body em { font-style: italic; }
 .note-body strong { font-weight: 700; }
 .note-body a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
