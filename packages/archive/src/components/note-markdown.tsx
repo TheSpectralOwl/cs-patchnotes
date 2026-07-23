@@ -38,13 +38,13 @@ export function safeWebHref(value?: string): string | undefined {
 }
 
 const markdownComponents = {
-  a({ children, href }) {
+  a({ children, href, node: _node, ...anchorProps }) {
     const safeHref = safeWebHref(href);
 
     if (!safeHref) return <>{children}</>;
 
     return (
-      <a className="note-link" href={safeHref} {...outboundLinkAttributes}>
+      <a {...anchorProps} className="note-link" href={safeHref} {...outboundLinkAttributes}>
         {children} <span className="link-domain">[{new URL(safeHref).hostname}]</span>
       </a>
     );

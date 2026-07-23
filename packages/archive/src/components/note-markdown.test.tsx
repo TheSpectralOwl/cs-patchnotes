@@ -72,6 +72,13 @@ Follow-up paragraph.`);
     expect(markup).toContain(`Read the update <span class="link-domain">[${hostname}]</span>`);
   });
 
+  it("preserves an accepted link's authored title", () => {
+    const markup = renderNote('[Read the update](https://example.test/patch "Release details")');
+
+    expect(markup).toContain('href="https://example.test/patch"');
+    expect(markup).toContain('title="Release details"');
+  });
+
   it.each([
     ["script-like", "javascript:alert(1)"],
     ["data-like", "data:text/html,alert(1)"],
