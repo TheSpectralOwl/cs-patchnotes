@@ -7,6 +7,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "check": "vite build",
+    "test": "vitest run",
     "deploy:cloudflare": "wrangler deploy --config dist/server/wrangler.json --keep-vars",
     "version:cloudflare": "wrangler versions upload --config dist/server/wrangler.json --keep-vars",
     "preview": "vite preview"
@@ -16,7 +17,8 @@
     "@tanstack/react-start": "^1.167.65",
     "motion": "^12.0.0",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "react-markdown": "10.1.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.36.4",
