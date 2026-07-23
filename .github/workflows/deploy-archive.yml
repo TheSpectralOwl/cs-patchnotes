@@ -5,26 +5,11 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: packages/archive-api/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/cs-patchnotes-archive-api:latest
-            ghcr.io/${{ github.repository_owner }}/cs-patchnotes-archive-api:${{ github.sha }}
       - uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -48,5 +33,4 @@ jobs:
             fi
             test -f "$archive_dir/.env"
             cd "$archive_dir"
-            CONTENT_HOST_DIR="$content_dir" docker compose -f docker-compose.archive.yml --profile vps pull
-            CONTENT_HOST_DIR="$content_dir" docker compose -f docker-compose.archive.yml --profile vps up -d
+            CONTENT_HOST_DIR="$content_dir" docker compose -f docker-compose.archive.yml --profile vps up --build -d
