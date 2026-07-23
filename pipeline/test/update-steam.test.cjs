@@ -17,13 +17,13 @@ function fakeBuild(documents = 1) {
 test("adds new captures, converts them, and rebuilds derived indexes", async () => {
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-"));
   const fetchNews = async () => new Map([["1", steamItem()]]);
-  const result = await updateSteam(contentDir, { fetchNews, buildSearchIndex: fakeBuild(), buildAppIndex: fakeBuild() });
+  const result = await updateSteam(contentDir, { fetchNews, buildSearchIndex: fakeBuild() });
   assert.equal(result.added, 1);
   assert.equal(result.conversion.created, 1);
   assert.ok(fs.existsSync(path.join(contentDir, "raw", "steam", "1.json")));
   assert.ok(fs.existsSync(path.join(contentDir, "content", "notes", "2024-01-01-counter-strike-2-update.md")));
 
-  const repeat = await updateSteam(contentDir, { fetchNews, buildSearchIndex: fakeBuild(), buildAppIndex: fakeBuild() });
+  const repeat = await updateSteam(contentDir, { fetchNews, buildSearchIndex: fakeBuild() });
   assert.equal(repeat.existing, 1);
   assert.equal(repeat.added, 0);
   assert.equal(repeat.conversion.unchanged, 1);
@@ -32,9 +32,9 @@ test("adds new captures, converts them, and rebuilds derived indexes", async () 
 test("detects changed payloads without changing the raw store", async () => {
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-conflict-"));
   const first = async () => new Map([["1", steamItem()]]);
-  await updateSteam(contentDir, { fetchNews: first, buildSearchIndex: fakeBuild(), buildAppIndex: fakeBuild() });
+  await updateSteam(contentDir, { fetchNews: first, buildSearchIndex: fakeBuild() });
   const conflicting = async () => new Map([["1", steamItem("[ GAMEPLAY ]\n- Changed source payload.\n")]]);
-  const result = await updateSteam(contentDir, { fetchNews: conflicting, buildSearchIndex: fakeBuild(), buildAppIndex: fakeBuild() });
+  const result = await updateSteam(contentDir, { fetchNews: conflicting, buildSearchIndex: fakeBuild() });
   assert.equal(result.conflicts.length, 1);
   assert.match(fs.readFileSync(path.join(contentDir, "raw", "steam", "1.json"), "utf8"), /Updated smoke/);
 });

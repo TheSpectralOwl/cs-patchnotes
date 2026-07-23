@@ -3,7 +3,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { auditCorpus } = require("./audit.cjs");
-const { buildAppCorpus } = require("./build-app.cjs");
 const { convertAll } = require("./convert.cjs");
 const { buildIndex } = require("./search.cjs");
 const { fetchAllNews, isPatchNote, toRawRecord } = require("../tools/seed-raw-from-steam.cjs");
@@ -31,7 +30,6 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   const convert = options.convert || convertAll;
   const audit = options.audit || auditCorpus;
   const buildSearchIndex = options.buildSearchIndex || buildIndex;
-  const buildAppIndex = options.buildAppIndex || buildAppCorpus;
   const dryRun = options.dryRun || false;
   const rawDir = path.join(contentDir, "raw", "steam");
   const fetched = await fetchNews();
@@ -65,7 +63,6 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   summary.audit = audit(contentDir);
   assertAuditClean(summary.audit);
   summary.search_index = buildSearchIndex(contentDir);
-  summary.app_index = buildAppIndex(contentDir);
   return summary;
 }
 
@@ -91,7 +88,6 @@ if (require.main === module) {
         },
       },
       search_index: summary.search_index,
-      app_index: summary.app_index,
     }, null, 2));
     if (summary.conflicts.length > 0) process.exitCode = 1;
   }).catch((error) => {

@@ -3,11 +3,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
-test("uses the archive Worker configuration and public content repository", () => {
+test("uses the archive Worker configuration and generated Start bundle", () => {
   const config = fs.readFileSync(path.join(__dirname, "../../wrangler.jsonc"), "utf8");
   const builder = fs.readFileSync(path.join(__dirname, "../build-cloudflare.cjs"), "utf8");
-  assert.match(config, /"directory": "\.\/packages\/archive\/dist"/);
-  assert.match(config, /"not_found_handling": "single-page-application"/);
-  assert.match(builder, /TheSpectralOwl\/cs-patchnotes-content\.git/);
+  assert.match(config, /"main": "packages\/archive\/src\/server-entry\.ts"/);
+  assert.match(config, /"nodejs_compat"/);
   assert.match(builder, /@cs-patchnotes\/archive/);
 });

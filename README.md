@@ -61,10 +61,13 @@ fallback before publishing the app.
 
 ## Cloudflare Worker deployment
 
-The root `wrangler.jsonc` deploys the archive app as static assets through the
-existing `cs-patchnotes-web` Worker. Configure the Git-connected Worker build
-with the repository root as its root directory and `npm run build:cloudflare`
-as its build command. The command clones the public content repository at
-`main` into a temporary directory, builds the app with that checkout, and then
-removes the temporary copy. Set `CONTENT_REPOSITORY` or `CONTENT_REF` in the
-Worker build environment to deploy a different public checkout or ref.
+The root `wrangler.jsonc` identifies the existing `cs-patchnotes-web` Worker.
+Configure the Git-connected Worker build with the repository root as its root
+directory, `npm run build:cloudflare` as its build command, and `npm run
+deploy:cloudflare` as its deploy command. TanStack Start writes the deployable
+Worker bundle and client assets to `packages/archive/dist/server` and
+`packages/archive/dist/client` respectively.
+
+Set the Worker runtime variable `API_URL` to the public origin of the archive
+read API. The Worker proxies browser `/api/*` requests to that API; no content
+checkout or generated corpus index is needed in the Cloudflare build.

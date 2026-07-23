@@ -47,6 +47,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run test:pipeline
       - run: npm run check -w @cs-patchnotes/archive
+      - run: npm run build -w @cs-patchnotes/archive-api
+      - run: npm test -w @cs-patchnotes/archive-api
       - run: npm run build:cloudflare
 
   corpus:
