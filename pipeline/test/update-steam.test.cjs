@@ -1,10 +1,33 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
 const { updateSteam } = require("../update-steam.cjs");
+
+function sourceSnapshot(rootDir) {
+  const entries = [];
+  function visit(directory) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+      const filename = path.join(directory, entry.name);
+      const relativePath = path.relative(rootDir, filename);
+      if (entry.isSymbolicLink()) entries.push({ path: relativePath, symlink: fs.readlinkSync(filename) });
+      else if (entry.isDirectory()) {
+        entries.push({ path: relativePath, type: "directory" });
+        visit(filename);
+      } else if (entry.isFile()) {
+        entries.push({
+          path: relativePath,
+          sha256: crypto.createHash("sha256").update(fs.readFileSync(filename)).digest("hex"),
+        });
+      }
+    }
+  }
+  visit(rootDir);
+  return entries;
+}
 
 function steamItem(body = "[ GAMEPLAY ]\n- Updated smoke.\n") {
   return { gid: "1", title: "Counter-Strike 2 Update", url: "https://example.test/1", feed_type: 1, feedname: "steam_community_announcements", date: 1_704_067_200, contents: body, tags: ["patchnotes"] };
@@ -53,6 +76,7 @@ test("reports additions without writing during a dry run", async () => {
 
 test("rejects a structured blocking audit finding with actionable record details", async () => {
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-audit-blocking-"));
+  const before = sourceSnapshot(contentDir);
   const finding = {
     class: "invalid_provenance",
     filename: "2024-01-01-counter-strike-2-update.md",
@@ -68,11 +92,13 @@ test("rejects a structured blocking audit finding with actionable record details
     }),
     /Corpus audit failed: invalid_provenance \(2024-01-01-counter-strike-2-update\.md; gid 1\): The source hash differs from the immutable capture\. Remediation: Regenerate the note from the immutable capture\./,
   );
+  assert.deepEqual(sourceSnapshot(contentDir), before);
 });
 
 test("fails closed for injected audit reports without a valid findings array", async () => {
   for (const report of [{}, { findings: null }, { findings: "invalid" }]) {
     const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-invalid-audit-"));
+    const before = sourceSnapshot(contentDir);
     await assert.rejects(
       updateSteam(contentDir, {
         fetchNews: async () => new Map([["1", steamItem()]]),
@@ -80,7 +106,43 @@ test("fails closed for injected audit reports without a valid findings array", a
       }),
       /Audit report is missing a valid findings array/,
     );
+    assert.deepEqual(sourceSnapshot(contentDir), before);
   }
+});
+
+test("leaves the source corpus byte-identical when staged conversion conflicts", async () => {
+  const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-conversion-conflict-"));
+  await updateSteam(contentDir, { fetchNews: async () => new Map([["1", steamItem()]]) });
+  const rawPath = path.join(contentDir, "raw", "steam", "1.json");
+  const raw = JSON.parse(fs.readFileSync(rawPath, "utf8"));
+  raw.body = "[ GAMEPLAY ]\n- Changed source payload.\n";
+  fs.writeFileSync(rawPath, `${JSON.stringify(raw, null, 2)}\n`);
+  const notePath = path.join(contentDir, "content", "notes", "2024-01-01-counter-strike-2-update.md");
+  fs.writeFileSync(notePath, fs.readFileSync(notePath, "utf8").replace("Updated smoke.", "Hand edit."));
+  const before = sourceSnapshot(contentDir);
+
+  const result = await updateSteam(contentDir, {
+    fetchNews: async () => new Map([["2", { ...steamItem(), gid: "2", title: "Second Update", url: "https://example.test/2" }]]),
+  });
+
+  assert.equal(result.conflicts.length, 1);
+  assert.deepEqual(sourceSnapshot(contentDir), before);
+});
+
+test("rejects symlinked corpora before staging or conversion", async () => {
+  const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-symlink-"));
+  const externalNotesDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-external-notes-"));
+  fs.mkdirSync(path.join(contentDir, "content"), { recursive: true });
+  fs.symlinkSync(externalNotesDir, path.join(contentDir, "content", "notes"));
+  const before = sourceSnapshot(contentDir);
+  const externalBefore = sourceSnapshot(externalNotesDir);
+
+  await assert.rejects(
+    updateSteam(contentDir, { fetchNews: async () => new Map([["1", steamItem()]]) }),
+    /Candidate corpus contains a symlink/,
+  );
+  assert.deepEqual(sourceSnapshot(contentDir), before);
+  assert.deepEqual(sourceSnapshot(externalNotesDir), externalBefore);
 });
 
 test("keeps informational duplicate evidence from rejecting an update", async () => {

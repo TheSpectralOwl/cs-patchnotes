@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { auditCorpus, blockingFindings } = require("./audit.cjs");
+const { assertNoSymlinks } = require("./corpus.cjs");
 const { convertAll } = require("./convert.cjs");
 const { fetchAllNews, isPatchNote, toRawRecord } = require("../tools/seed-raw-from-steam.cjs");
 
@@ -28,6 +30,7 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   const audit = options.audit || auditCorpus;
   const dryRun = options.dryRun || false;
   const rawDir = path.join(contentDir, "raw", "steam");
+  assertNoSymlinks(contentDir);
   const fetched = await fetchNews();
   const items = fetched instanceof Map ? [...fetched.values()] : fetched;
   const accepted = items.filter(isPatchNote).sort((left, right) => left.gid.localeCompare(right.gid));
@@ -49,16 +52,32 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   summary.added = planned.length;
   if (dryRun) return summary;
 
-  fs.mkdirSync(rawDir, { recursive: true });
-  for (const entry of planned) fs.writeFileSync(entry.filename, entry.contents);
-  summary.conversion = convert(contentDir);
-  if (summary.conversion.conflicts.length > 0) {
-    summary.conflicts = summary.conversion.conflicts.map((conflict) => conflict.note);
+  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-"));
+  const stagedContentDir = path.join(stagingDir, "content");
+  try {
+    fs.cpSync(contentDir, stagedContentDir, { recursive: true });
+    const stagedRawDir = path.join(stagedContentDir, "raw", "steam");
+    fs.mkdirSync(stagedRawDir, { recursive: true });
+    for (const entry of planned) {
+      fs.writeFileSync(path.join(stagedRawDir, path.basename(entry.filename)), entry.contents);
+    }
+
+    summary.conversion = convert(stagedContentDir);
+    if (summary.conversion.conflicts.length > 0) {
+      summary.conflicts = summary.conversion.conflicts.map((conflict) => path.join(
+        contentDir,
+        path.relative(stagedContentDir, conflict.note),
+      ));
+      return summary;
+    }
+    summary.audit = audit(stagedContentDir);
+    assertAuditClean(summary.audit);
+    assertNoSymlinks(contentDir);
+    fs.cpSync(stagedContentDir, contentDir, { recursive: true, force: true });
     return summary;
+  } finally {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
   }
-  summary.audit = audit(contentDir);
-  assertAuditClean(summary.audit);
-  return summary;
 }
 
 if (require.main === module) {
