@@ -222,6 +222,31 @@ test("rejects path-bearing dates and hashes that do not match raw bodies", () =>
   );
 });
 
+test("reports newline-bearing and unsupported raw metadata enums", () => {
+  const { contentDir, raw } = validCorpus();
+  const cases = [
+    ["newline-game.json", "2", "game", 'cs2\ntitle: "Forged"', "missing or invalid game"],
+    ["invalid-game.json", "3", "game", "cs1", "missing or invalid game"],
+    ["invalid-content-kind.json", "4", "content_kind", "announcement", "missing or invalid content_kind"],
+    ["invalid-body-format.json", "5", "body_format", "html", "missing or invalid body_format"],
+  ];
+  for (const [filename, gid, field, value] of cases) {
+    fs.writeFileSync(path.join(contentDir, "raw", "steam", filename), JSON.stringify({
+      ...raw,
+      gid,
+      source_url: `https://example.test/${gid}`,
+      [field]: value,
+    }));
+  }
+
+  assert.deepEqual(
+    blockingFindings(auditCorpus(contentDir))
+      .filter((finding) => finding.class === "invalid_raw_record")
+      .map((finding) => [finding.filename, finding.detail]),
+    cases.map(([filename, _gid, _field, _value, detail]) => [filename, detail]).sort(([left], [right]) => left.localeCompare(right)),
+  );
+});
+
 test("sorts blocking records by class, filename, and Steam GID", () => {
   const { contentDir, raw } = validCorpus();
   writeRaw(contentDir, makeRaw({ gid: "2", title: "Second", source_url: "https://example.test/2" }));

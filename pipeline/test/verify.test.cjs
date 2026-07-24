@@ -116,6 +116,29 @@ test("fails when committed Markdown is stale for the current converter", () => {
   assert.match(result.failures[0], /not current/);
 });
 
+test("reports malformed raw metadata before conversion can make it eligible", () => {
+  const cases = [
+    ["game", 'cs2\ntitle: "Forged"'],
+    ["game", "cs1"],
+    ["content_kind", "announcement"],
+    ["body_format", "html"],
+  ];
+  for (const [field, value] of cases) {
+    const contentDir = createCorpus();
+    const rawPath = path.join(contentDir, "raw", "steam", "1.json");
+    const raw = JSON.parse(fs.readFileSync(rawPath, "utf8"));
+    raw[field] = value;
+    fs.writeFileSync(rawPath, JSON.stringify(raw));
+    const before = sourceSnapshot(contentDir);
+
+    const result = verifyCorpus(contentDir);
+    assert.equal(result.ok, false);
+    assert.ok(result.blocking_findings.some((finding) => finding.class === "invalid_raw_record"));
+    assert.deepEqual(result.conversion, { created: 0, regenerated: 0, unchanged: 0, preserved: 0, overridden: 0, conflicts: [] });
+    assert.deepEqual(sourceSnapshot(contentDir), before);
+  }
+});
+
 test("rejects every structured blocking audit record without modifying source evidence", () => {
   for (const record of blockingRecords) {
     const contentDir = createCorpus();

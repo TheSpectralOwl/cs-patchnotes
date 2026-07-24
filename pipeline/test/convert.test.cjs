@@ -120,6 +120,23 @@ test("rejects path-bearing dates and false raw hashes before writing any note", 
   assert.equal(fs.existsSync(notePath(contentDir)), false);
 });
 
+test("rejects unsafe raw metadata values before creating eligible notes", () => {
+  const cases = [
+    ["game", 'cs2\ntitle: "Forged"', "missing or invalid game"],
+    ["game", "cs1", "missing or invalid game"],
+    ["content_kind", "announcement", "missing or invalid content_kind"],
+    ["body_format", "html", "missing or invalid body_format"],
+  ];
+  for (const [field, value, error] of cases) {
+    const raw = { ...fixture("2024"), [field]: value };
+    const contentDir = tempCorpus(raw);
+
+    assert.throws(() => convertAll(contentDir), new RegExp(error));
+    const notesDir = path.join(contentDir, "content", "notes");
+    assert.deepEqual(fs.readdirSync(notesDir).filter((filename) => filename.endsWith(".md")), []);
+  }
+});
+
 test("rejects symlinked notes and overrides before reading or writing them", (t) => {
   if (process.platform !== "linux") return t.skip("symlink security regression requires Linux Node");
   const contentDir = tempCorpus();

@@ -27,6 +27,10 @@ function auditFailures(findings) {
     .map(([findingClass, count]) => `${findingClass} has ${count} finding(s)`);
 }
 
+function emptyConversionSummary() {
+  return { created: 0, regenerated: 0, unchanged: 0, preserved: 0, overridden: 0, conflicts: [] };
+}
+
 function verifyCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR, options = {}) {
   const auditCorpusCopy = options.audit || auditCorpus;
   const temporaryDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-verify-"));
@@ -34,6 +38,17 @@ function verifyCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DI
   try {
     assertNoSymlinks(contentDir);
     fs.cpSync(contentDir, copiedContentDir, { recursive: true });
+    const preConversionAudit = auditCorpusCopy(copiedContentDir);
+    const preConversionFindings = blockingFindings(preConversionAudit);
+    if (preConversionFindings.length > 0) {
+      return {
+        ok: false,
+        failures: auditFailures(preConversionFindings),
+        conversion: emptyConversionSummary(),
+        audit: preConversionAudit,
+        blocking_findings: preConversionFindings,
+      };
+    }
     const conversion = convertAll(copiedContentDir);
     const audit = auditCorpusCopy(copiedContentDir);
     const blocking_findings = blockingFindings(audit);

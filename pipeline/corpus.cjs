@@ -3,6 +3,10 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 
 const STEAM_GID_PATTERN = /^[0-9]+$/;
+const RAW_GAMES = new Set(["csgo", "cs2"]);
+const RAW_CONTENT_KINDS = new Set(["patch_notes"]);
+const RAW_BODY_FORMATS = new Set(["bbcode", "plain_text"]);
+
 function isSteamGid(value) { return typeof value === "string" && STEAM_GID_PATTERN.test(value); }
 function assertSteamGid(value, label = "Steam GID") {
   if (!isSteamGid(value)) throw new Error(`${label} must contain only decimal digits`);
@@ -25,6 +29,9 @@ function rawRecordIssue(raw) {
     if (raw[field].length === 0) return `missing or invalid ${field}`;
   }
   if (!isCanonicalDate(raw.date)) return "missing or invalid date";
+  if (!RAW_GAMES.has(raw.game)) return "missing or invalid game";
+  if (!RAW_CONTENT_KINDS.has(raw.content_kind)) return "missing or invalid content_kind";
+  if (!RAW_BODY_FORMATS.has(raw.body_format)) return "missing or invalid body_format";
   if (!/^[a-f0-9]{64}$/.test(raw.body_sha256)) return "missing or invalid body_sha256";
   if (sha256(raw.body) !== raw.body_sha256) return "body_sha256 does not match body";
   return null;

@@ -12,11 +12,12 @@ type NoteFixture = {
   steamGid: string;
   sourceHash: string;
   body: string;
+  game?: string;
 };
 
-function writeNote(contentDir: string, { filename, steamGid, sourceHash, body }: NoteFixture) {
+function writeNote(contentDir: string, { filename, steamGid, sourceHash, body, game = "cs2" }: NoteFixture) {
   const hash = createHash("sha256").update(body).digest("hex");
-  writeFileSync(join(contentDir, "content", "notes", filename), `---\ntitle: "Counter-Strike 2 Update"\ndate: 2024-01-01\ngame: cs2\nsteam_gid: "${steamGid}"\nsource_url: "https://example.test/${steamGid}"\nsource_sha256: "${sourceHash}"\ngenerated_sha256: "${hash}"\n---\n${body}`);
+  writeFileSync(join(contentDir, "content", "notes", filename), `---\ntitle: "Counter-Strike 2 Update"\ndate: 2024-01-01\ngame: ${JSON.stringify(game)}\nsteam_gid: "${steamGid}"\nsource_url: "https://example.test/${steamGid}"\nsource_sha256: "${sourceHash}"\ngenerated_sha256: "${hash}"\n---\n${body}`);
 }
 
 function contentFixture(notes: NoteFixture[] = [{
@@ -48,6 +49,18 @@ describe("archive API", () => {
     apps.push(app);
     expect((await app.inject({ method: "POST", url: "/internal/reload" })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: "/internal/reload", headers: { authorization: "Bearer secret" } })).statusCode).toBe(200);
+  });
+
+  it("rejects an unsupported game value in frontmatter at runtime", () => {
+    expect(() => buildServer({
+      contentDir: contentFixture([{
+        filename: "2024-01-01-invalid.md",
+        steamGid: "1",
+        sourceHash: "source",
+        body: "# Counter-Strike 2 Update\n",
+        game: "cs1",
+      }]),
+    })).toThrow(/invalid game frontmatter/);
   });
 
   it("retains duplicate evidence while presenting the lower-GID canonical note", async () => {
