@@ -29,6 +29,7 @@ export type PreviewSection = {
 };
 
 export type SearchHit = Pick<Note, "id" | "title" | "date" | "game" | "steam_gid" | "source_url"> & {
+  body_sha256: string;
   score: number;
   sections: PreviewSection[];
 };
@@ -298,6 +299,7 @@ export function searchCorpus(index: CorpusIndex, query: string, filters: { game?
         game: note.game,
         steam_gid: note.steam_gid,
         source_url: note.source_url,
+        body_sha256: createHash("sha256").update(note.body).digest("hex"),
         score,
         sections: projectSections(context, queryTokens),
       }));

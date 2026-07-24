@@ -19,6 +19,7 @@ export type Hit = {
   date: string;
   game: Exclude<ArchiveSearch["game"], "">;
   source_url: string;
+  body_sha256: string;
   sections: Array<{ heading: string; items: PreviewItem[] }>;
 };
 type Note = { body: string };
@@ -29,7 +30,7 @@ export function contextualHits(response: unknown): Hit[] {
   }
 
   const hits = (response as { hits: unknown[] }).hits;
-  if (!hits.every((hit) => hit && typeof hit === "object" && Array.isArray((hit as { sections?: unknown }).sections))) {
+  if (!hits.every((hit) => hit && typeof hit === "object" && typeof (hit as { body_sha256?: unknown }).body_sha256 === "string" && Array.isArray((hit as { sections?: unknown }).sections))) {
     throw new Error("Search results require the updated archive API. Deploy the API, then retry.");
   }
 
@@ -71,8 +72,8 @@ function Archive() {
       .then((payload) => {
         const hits = contextualHits(payload);
         if (controller.signal.aborted) return;
-        cache.retain(hits.map((hit) => hit.id));
-        cache.prefetch(hits.map((hit) => hit.id));
+        cache.retain(hits.map((hit) => ({ id: hit.id, version: hit.body_sha256 })));
+        cache.prefetch(hits.map((hit) => ({ id: hit.id, version: hit.body_sha256 })));
         dispatchResults({ type: "success", requestId: currentRequest, hits });
       })
       .catch((reason: unknown) => {
@@ -116,7 +117,7 @@ function Archive() {
         if (next.has(hit.id)) next.delete(hit.id);
         else {
           next.add(hit.id);
-          void cache.ensure(hit.id).finally(() => setCacheVersion((version) => version + 1));
+          void cache.ensure(hit.id, hit.body_sha256).finally(() => setCacheVersion((version) => version + 1));
         }
         return next;
       })} />)}</AnimatePresence>
@@ -133,13 +134,13 @@ export function timelineTransition(reduceMotion: boolean | null) {
 }
 
 export function TimelineEntry({ hit, search, previewTokens, cache, expanded, reduceMotion, onRefresh, onToggle }: { hit: Hit; search: ArchiveSearch; previewTokens: string[]; cache: NoteBodyCache<Note>; expanded: boolean; reduceMotion: boolean | null; onRefresh(): void; onToggle(): void }) {
-  const record = cache.record(hit.id);
+  const record = cache.record(hit.id, hit.body_sha256);
   const expandedRegionId = `patch-${hit.id}`;
   return <motion.article className="timeline-entry" layout initial={reduceMotion ? false : { y: 12 }} animate={{ y: 0 }} exit={reduceMotion ? undefined : { y: -8 }} transition={timelineTransition(reduceMotion)}>
     <div className="date-gutter"><time dateTime={hit.date}>{hit.date}</time><span>{hit.game === "cs2" ? "CS2" : "CS:GO"}</span></div><div className="node" />
     <div className="entry-content"><Link to="/notes/$id" params={{ id: hit.id }} search={search} className="note-title">{hit.title}</Link><p className="kind"><i />Official patch notes</p>
       {hit.sections.map((section, sectionIndex) => <section key={`${section.heading}-${sectionIndex}`} className="context-section"><p className="context-heading"><PreviewMarkdown markdown={section.heading} queryTokens={previewTokens} /></p>{section.items.map((item, itemIndex) => <p key={`${item.markdown}-${itemIndex}`} className={item.kind === "change" ? "preview-change" : "preview-prose"}><PreviewMarkdown markdown={item.markdown} queryTokens={previewTokens} /></p>)}</section>)}
-      {record?.status === "error" ? <><p className="state error">The full patch could not be loaded. Retry to load it.</p><button className="more" onClick={() => { void cache.retry(hit.id).finally(onRefresh); }}>Retry full patch</button></> : <>{expanded && record?.status === "pending" && <p className="state" role="status">Loading full patch…</p>}<button className="more" onClick={onToggle} aria-expanded={expanded} aria-controls={expandedRegionId}>{expanded ? record?.status === "pending" ? "Loading full patch…" : "Collapse patch" : "Show full patch"}</button></>}
+      {record?.status === "error" ? <><p className="state error">The full patch could not be loaded. Retry to load it.</p><button className="more" onClick={() => { void cache.retry(hit.id, hit.body_sha256).finally(onRefresh); }}>Retry full patch</button></> : <>{expanded && record?.status === "pending" && <p className="state" role="status">Loading full patch…</p>}<button className="more" onClick={onToggle} aria-expanded={expanded} aria-controls={expandedRegionId}>{expanded ? record?.status === "pending" ? "Loading full patch…" : "Collapse patch" : "Show full patch"}</button></>}
       {expanded && record?.status === "ready" && record.value && <motion.div id={expandedRegionId} className="note-body" layout="position"><NoteMarkdown body={record.value.body} title={hit.title} /></motion.div>}
     </div>
   </motion.article>;

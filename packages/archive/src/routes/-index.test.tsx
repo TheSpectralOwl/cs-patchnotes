@@ -80,15 +80,33 @@ describe("bounded note body cache", () => {
       return request.promise;
     });
 
-    cache.prefetch(["one", "two", "three", "four", "obsolete"]);
+    cache.prefetch(["one", "two", "three", "four", "obsolete"].map((id) => ({ id })));
 
     expect([...requests]).toHaveLength(4);
     expect(cache.queuedIds()).toEqual(["obsolete"]);
 
-    cache.retain(["one", "two", "three", "four"]);
+    cache.retain(["one", "two", "three", "four"].map((id) => ({ id })));
 
     expect(cache.queuedIds()).toEqual([]);
     expect(cache.record("obsolete")).toBeUndefined();
+  });
+
+  it("does not reuse or restore an older body after a refreshed search result", async () => {
+    const stale = deferred<{ body: string }>();
+    const current = deferred<{ body: string }>();
+    const cache = new NoteBodyCache((_id, signal) => {
+      signal.addEventListener("abort", () => stale.reject(new DOMException("Aborted", "AbortError")));
+      return cache.record("one", "old") ? stale.promise : current.promise;
+    });
+
+    cache.prefetch([{ id: "one", version: "old" }]);
+    cache.retain([{ id: "one", version: "new" }]);
+    const replacement = cache.ensure("one", "new");
+    current.resolve({ body: "New body" });
+
+    await expect(replacement).resolves.toEqual({ body: "New body" });
+    expect(cache.record("one", "old")).toBeUndefined();
+    expect(cache.record("one", "new")).toMatchObject({ status: "ready", value: { body: "New body" } });
   });
 
   it("only replaces a failed body request after an explicit retry", async () => {
@@ -136,6 +154,7 @@ describe("contextual timeline entries", () => {
     date: "2024-01-01",
     game: "cs2" as const,
     source_url: "https://example.test/source",
+    body_sha256: "current-body",
     sections: [
       {
         heading: "*smoke* heading",
@@ -153,7 +172,7 @@ describe("contextual timeline entries", () => {
 
   it("renders every ordered contextual section with nested literal marks and safe note navigation", async () => {
     const cache = new NoteBodyCache(async () => ({ body: "# Smoke Update\n\nComplete *smoke* patch." }));
-    await cache.ensure(hit.id);
+    await cache.ensure(hit.id, hit.body_sha256);
 
     const rootRoute = createRootRoute();
     const noteRoute = createRoute({ getParentRoute: () => rootRoute, path: "notes/$id", component: () => null });
