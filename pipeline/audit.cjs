@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { parseNote, sha256 } = require("./convert.cjs");
+const { rawRecordIssue } = require("./corpus.cjs");
 
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
 const DEFAULT_REPORT_PATH = path.resolve(__dirname, "..", ".cache", "corpus-audit.json");
@@ -69,17 +70,7 @@ function readRawRecords(contentDir) {
     .sort()) {
     try {
       const record = JSON.parse(fs.readFileSync(path.join(rawDir, filename), "utf8"));
-      const detail = !isNonEmptyString(record.gid) || !/^[0-9]+$/.test(record.gid)
-        ? "missing or invalid gid"
-        : typeof record.body !== "string"
-          ? "missing or non-string body"
-          : typeof record.title !== "string"
-            ? "missing or non-string title"
-              : typeof record.date !== "string"
-                ? "missing or non-string date"
-                : !/^[a-f0-9]{64}$/i.test(record.body_sha256)
-                  ? "missing or invalid body_sha256"
-                  : null;
+      const detail = rawRecordIssue(record);
       if (detail) findings.push(createFinding("invalid_raw_record", { filename, detail }));
       else records.push({ ...record, filename });
     } catch {

@@ -24,7 +24,7 @@ function tempCorpus(raw = fixture("2024")) {
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-content-"));
   const rawDir = path.join(contentDir, "raw", "steam");
   fs.mkdirSync(rawDir, { recursive: true });
-  fs.writeFileSync(path.join(rawDir, `${raw.gid}.json`), `${JSON.stringify(raw)}\n`);
+  fs.writeFileSync(path.join(rawDir, `${raw.gid}.json`), `${JSON.stringify({ ...raw, body_sha256: sha256(raw.body) })}\n`);
   return contentDir;
 }
 
@@ -38,6 +38,7 @@ test("regenerates untouched output after raw content changes", () => {
   assert.equal(convertAll(contentDir).created, 1);
 
   raw.body += "\n[*] Added a second item.";
+  raw.body_sha256 = sha256(raw.body);
   fs.writeFileSync(path.join(contentDir, "raw", "steam", "2024.json"), `${JSON.stringify(raw)}\n`);
   const summary = convertAll(contentDir);
   assert.equal(summary.regenerated, 1);
@@ -65,6 +66,7 @@ test("flags rather than overwrites a hand edit when conversion changes", () => {
   fs.writeFileSync(target, fs.readFileSync(target, "utf8").replace("Added damage prediction.", "Hand edit."));
 
   raw.body += "\n[*] Newly generated item.";
+  raw.body_sha256 = sha256(raw.body);
   fs.writeFileSync(path.join(contentDir, "raw", "steam", "2024.json"), `${JSON.stringify(raw)}\n`);
   const summary = convertAll(contentDir);
   assert.equal(summary.conflicts.length, 1);
@@ -99,7 +101,23 @@ test("rejects raw GIDs that could escape the overrides directory", () => {
   const raw = { ...fixture("2024"), gid: "../outside" };
   const contentDir = tempCorpus({ ...raw, gid: "2024" });
   fs.writeFileSync(path.join(contentDir, "raw", "steam", "2024.json"), `${JSON.stringify(raw)}\n`);
-  assert.throws(() => convertAll(contentDir), /Raw Steam GID in .*must contain only decimal digits/);
+  assert.throws(() => convertAll(contentDir), /Raw record in .*missing or invalid gid/);
+});
+
+test("rejects path-bearing dates and false raw hashes before writing any note", () => {
+  const contentDir = tempCorpus();
+  const rawPath = path.join(contentDir, "raw", "steam", "2024.json");
+  const raw = { ...fixture("2024"), date: "../../outside" };
+  const escapedTarget = path.resolve(path.join(contentDir, "content", "notes"), "../../outside-counter-strike-2-update.md");
+  fs.writeFileSync(rawPath, `${JSON.stringify(raw)}\n`);
+  assert.throws(() => convertAll(contentDir), /missing or invalid date/);
+  assert.equal(fs.existsSync(escapedTarget), false);
+
+  raw.date = "2024-01-01";
+  raw.body_sha256 = "a".repeat(64);
+  fs.writeFileSync(rawPath, `${JSON.stringify(raw)}\n`);
+  assert.throws(() => convertAll(contentDir), /body_sha256 does not match body/);
+  assert.equal(fs.existsSync(notePath(contentDir)), false);
 });
 
 test("rejects symlinked notes and overrides before reading or writing them", (t) => {

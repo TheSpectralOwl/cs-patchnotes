@@ -8,6 +8,37 @@ function assertSteamGid(value, label = "Steam GID") {
   if (!isSteamGid(value)) throw new Error(`${label} must contain only decimal digits`);
   return value;
 }
+
+function isCanonicalDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  if (month < 1 || month > 12 || day < 1) return false;
+  return day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function rawRecordIssue(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "record is not an object";
+  if (!isSteamGid(raw.gid)) return "missing or invalid gid";
+  if (typeof raw.body !== "string") return "missing or non-string body";
+  for (const field of ["title", "game", "content_kind", "body_format", "source_url"]) {
+    if (typeof raw[field] !== "string") return `missing or non-string ${field}`;
+    if (raw[field].length === 0) return `missing or invalid ${field}`;
+  }
+  if (!isCanonicalDate(raw.date)) return "missing or invalid date";
+  if (!/^[a-f0-9]{64}$/.test(raw.body_sha256)) return "missing or invalid body_sha256";
+  if (sha256(raw.body) !== raw.body_sha256) return "body_sha256 does not match body";
+  return null;
+}
+
+function assertRawRecord(raw, label = "Raw record") {
+  const issue = rawRecordIssue(raw);
+  if (issue) throw new Error(`${label}: ${issue}`);
+  return raw;
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
 function resolveContainedPath(root, relativePath) {
   const resolvedRoot = path.resolve(root);
   const resolvedPath = path.resolve(resolvedRoot, relativePath);
@@ -47,4 +78,13 @@ function corpusSnapshot(root) {
   return hash.digest("hex");
 }
 
-module.exports = { assertNoSymlinks, assertSteamGid, corpusSnapshot, isSteamGid, resolveContainedPath };
+module.exports = {
+  assertNoSymlinks,
+  assertRawRecord,
+  assertSteamGid,
+  corpusSnapshot,
+  isCanonicalDate,
+  isSteamGid,
+  rawRecordIssue,
+  resolveContainedPath,
+};

@@ -202,6 +202,26 @@ test("rejects duplicate raw GIDs and invalid raw hashes", () => {
   assert.ok(blockingFindings(auditCorpus(contentDir)).some((finding) => finding.class === "invalid_raw_record"));
 });
 
+test("rejects path-bearing dates and hashes that do not match raw bodies", () => {
+  const { contentDir, raw } = validCorpus();
+  fs.writeFileSync(path.join(contentDir, "raw", "steam", "bad-date.json"), JSON.stringify({
+    ...raw,
+    gid: "2",
+    date: "../../outside",
+  }));
+  fs.writeFileSync(path.join(contentDir, "raw", "steam", "bad-hash.json"), JSON.stringify({
+    ...raw,
+    gid: "3",
+    body_sha256: "a".repeat(64),
+  }));
+
+  const findings = blockingFindings(auditCorpus(contentDir));
+  assert.deepEqual(
+    findings.filter((finding) => finding.class === "invalid_raw_record").map((finding) => [finding.filename, finding.detail]),
+    [["bad-date.json", "missing or invalid date"], ["bad-hash.json", "body_sha256 does not match body"]],
+  );
+});
+
 test("sorts blocking records by class, filename, and Steam GID", () => {
   const { contentDir, raw } = validCorpus();
   writeRaw(contentDir, makeRaw({ gid: "2", title: "Second", source_url: "https://example.test/2" }));

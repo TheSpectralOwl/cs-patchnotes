@@ -3,7 +3,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { assertNoSymlinks, assertSteamGid, resolveContainedPath } = require("./corpus.cjs");
+const { assertNoSymlinks, assertRawRecord, resolveContainedPath } = require("./corpus.cjs");
 
 const CONVERTER_VERSION = 6;
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
@@ -175,7 +175,7 @@ function loadRawRecords(contentDir) {
     .sort()
     .map((filename) => {
       const raw = JSON.parse(fs.readFileSync(path.join(rawDir, filename), "utf8"));
-      assertSteamGid(raw.gid, `Raw Steam GID in ${filename}`);
+      assertRawRecord(raw, `Raw record in ${filename}`);
       return raw;
     });
 }
@@ -209,7 +209,7 @@ function convertAll(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR)
   for (const raw of records) {
     const filename = noteFilename(raw, filenameCounts.get(noteFilename(raw)) > 1);
 
-    const target = path.join(notesDir, filename);
+    const target = resolveContainedPath(notesDir, filename);
     const override = resolveContainedPath(overridesDir, `${raw.gid}.md`);
     if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${target}`);
     if (fs.existsSync(override) && fs.lstatSync(override).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${override}`);

@@ -125,6 +125,7 @@ test("leaves the source corpus byte-identical when staged conversion conflicts",
   const rawPath = path.join(contentDir, "raw", "steam", "1.json");
   const raw = JSON.parse(fs.readFileSync(rawPath, "utf8"));
   raw.body = "[ GAMEPLAY ]\n- Changed source payload.\n";
+  raw.body_sha256 = crypto.createHash("sha256").update(raw.body).digest("hex");
   fs.writeFileSync(rawPath, `${JSON.stringify(raw, null, 2)}\n`);
   const notePath = path.join(contentDir, "content", "notes", "2024-01-01-counter-strike-2-update.md");
   fs.writeFileSync(notePath, fs.readFileSync(notePath, "utf8").replace("Updated smoke.", "Hand edit."));
