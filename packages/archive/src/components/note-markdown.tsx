@@ -76,7 +76,7 @@ function escapeRegularExpression(value: string): string {
 
 function literalMarkPlugin(queryTokens: string[]) {
   const matcher = queryTokens.length > 0
-    ? new RegExp(`(${queryTokens.map(escapeRegularExpression).join("|")})`, "gi")
+    ? new RegExp(`(?<![a-z0-9])(${[...queryTokens].sort((left, right) => right.length - left.length || left.localeCompare(right)).map(escapeRegularExpression).join("|")})(?![a-z0-9])`, "gi")
     : undefined;
 
   return (tree: HastNode) => {
