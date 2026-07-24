@@ -122,6 +122,28 @@ describe("archive API", () => {
     ]);
   });
 
+  it("keeps continuation-paragraph matches with their list-item siblings", async () => {
+    const app = buildServer({ contentDir: contentFixture([{
+      filename: "2024-01-01-continuation.md",
+      steamGid: "1",
+      sourceHash: "continuation-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Before the adjustment.\n\n- Initial detail.\n\n  Continuation smoke detail.\n\n- After the adjustment.\n\n## Maps\n\n- Unrelated map update.\n",
+    }]), reloadToken: "secret" });
+    apps.push(app);
+
+    const response = await app.inject("/api/search?q=smoke");
+
+    expect(response.json().hits[0].sections).toEqual([{
+      heading: "Gameplay",
+      items: [
+        { markdown: "Before the adjustment.", kind: "change", matched: false },
+        { markdown: "Initial detail.", kind: "change", matched: false },
+        { markdown: "Continuation smoke detail.", kind: "change", matched: true },
+        { markdown: "After the adjustment.", kind: "change", matched: false },
+      ],
+    }]);
+  });
+
   it("uses the earliest headed source preview for title-only hits and unfiltered browse", async () => {
     const app = buildServer({ contentDir: contentFixture([
       {

@@ -41,7 +41,8 @@ type PositionedNode = {
 
 type ContextItem = Omit<PreviewItem, "matched"> & {
   order: number;
-  siblings?: ContextItem[];
+  siblingGroups?: ContextItem[][];
+  siblingGroupIndex?: number;
 };
 
 type ContextSection = {
@@ -132,26 +133,35 @@ function contextualSections(body: string): ContextSection[] {
     return current;
   };
 
-  const addItem = (section: ContextSection, node: PositionedNode, kind: PreviewItem["kind"], siblings?: ContextItem[]) => {
+  const addItem = (section: ContextSection, node: PositionedNode, kind: PreviewItem["kind"]) => {
     const markdown = inlineSourceSlice(body, node);
     const order = node.position?.start.offset;
     if (order === undefined) throw new Error("Markdown parser returned a node without source positions");
-    const item: ContextItem = { markdown, kind, order, siblings };
+    const item: ContextItem = { markdown, kind, order };
     section.items.push(item);
     return item;
   };
 
   const walkList = (list: PositionedNode) => {
     const section = requireSection();
-    const siblings: ContextItem[] = [];
+    const siblingGroups: ContextItem[][] = [];
     const nestedLists: PositionedNode[] = [];
 
     for (const listItem of list.children ?? []) {
       if (listItem.type !== "listItem") continue;
-      const paragraph = listItem.children?.find((child) => child.type === "paragraph");
-      if (paragraph) siblings.push(addItem(section, paragraph, "change", siblings));
+      const group = (listItem.children ?? [])
+        .filter((child) => child.type === "paragraph")
+        .map((paragraph) => addItem(section, paragraph, "change"));
+      if (group.length > 0) siblingGroups.push(group);
       nestedLists.push(...(listItem.children ?? []).filter((child) => child.type === "list"));
     }
+
+    siblingGroups.forEach((group, siblingGroupIndex) => {
+      group.forEach((item) => {
+        item.siblingGroups = siblingGroups;
+        item.siblingGroupIndex = siblingGroupIndex;
+      });
+    });
 
     for (const nestedList of nestedLists) walkList(nestedList);
   };
@@ -239,10 +249,13 @@ function projectSections(sections: ContextSection[], queryTokens: string[]): Pre
     for (const item of matched) {
       selected.add(item);
       if (item.kind === "change") {
-        const siblings = item.siblings ?? [];
-        const index = siblings.indexOf(item);
-        if (index > 0) selected.add(siblings[index - 1]);
-        if (index >= 0 && index < siblings.length - 1) selected.add(siblings[index + 1]);
+        const siblings = item.siblingGroups;
+        const index = item.siblingGroupIndex;
+        if (siblings && index !== undefined) {
+          for (const sibling of siblings[index] ?? []) selected.add(sibling);
+          for (const sibling of siblings[index - 1] ?? []) selected.add(sibling);
+          for (const sibling of siblings[index + 1] ?? []) selected.add(sibling);
+        }
       } else {
         const change = nearestChange(section.items, item);
         if (change) selected.add(change);
