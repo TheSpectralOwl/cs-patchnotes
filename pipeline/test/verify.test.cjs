@@ -13,10 +13,13 @@ function sourceSnapshot(rootDir) {
   function visit(directory) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
       const filename = path.join(directory, entry.name);
-      if (entry.isDirectory()) visit(filename);
+      const relativePath = path.relative(rootDir, filename);
+      if (entry.isSymbolicLink()) {
+        files.push({ path: relativePath, symlink: fs.readlinkSync(filename) });
+      } else if (entry.isDirectory()) visit(filename);
       else if (entry.isFile()) {
         files.push({
-          path: path.relative(rootDir, filename),
+          path: relativePath,
           sha256: crypto.createHash("sha256").update(fs.readFileSync(filename)).digest("hex"),
         });
       }
@@ -70,6 +73,36 @@ test("verifies a complete corpus without modifying source evidence", () => {
   assert.equal(result.ok, true);
   assert.equal(result.conversion.unchanged, 1);
   assert.deepEqual(sourceSnapshot(contentDir), before);
+});
+
+test("rejects a notes-directory symlink before copying or converting", () => {
+  const contentDir = createCorpus();
+  const notesDir = path.join(contentDir, "content", "notes");
+  const externalNotesDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-verify-external-notes-"));
+  fs.cpSync(notesDir, externalNotesDir, { recursive: true });
+  fs.rmSync(notesDir, { recursive: true });
+  fs.symlinkSync(externalNotesDir, notesDir);
+  const before = sourceSnapshot(contentDir);
+  const externalBefore = sourceSnapshot(externalNotesDir);
+
+  assert.throws(() => verifyCorpus(contentDir), /Candidate corpus contains a symlink/);
+  assert.deepEqual(sourceSnapshot(contentDir), before);
+  assert.deepEqual(sourceSnapshot(externalNotesDir), externalBefore);
+});
+
+test("rejects a raw-store symlink before copying or converting", () => {
+  const contentDir = createCorpus();
+  const rawDir = path.join(contentDir, "raw", "steam");
+  const externalRawDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-verify-external-raw-"));
+  fs.cpSync(rawDir, externalRawDir, { recursive: true });
+  fs.rmSync(rawDir, { recursive: true });
+  fs.symlinkSync(externalRawDir, rawDir);
+  const before = sourceSnapshot(contentDir);
+  const externalBefore = sourceSnapshot(externalRawDir);
+
+  assert.throws(() => verifyCorpus(contentDir), /Candidate corpus contains a symlink/);
+  assert.deepEqual(sourceSnapshot(contentDir), before);
+  assert.deepEqual(sourceSnapshot(externalRawDir), externalBefore);
 });
 
 test("fails when committed Markdown is stale for the current converter", () => {

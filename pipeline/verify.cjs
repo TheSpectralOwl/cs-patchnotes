@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { auditCorpus, blockingFindings } = require("./audit.cjs");
+const { assertNoSymlinks } = require("./corpus.cjs");
 const { convertAll } = require("./convert.cjs");
 
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
@@ -31,6 +32,7 @@ function verifyCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DI
   const temporaryDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-verify-"));
   const copiedContentDir = path.join(temporaryDir, "content");
   try {
+    assertNoSymlinks(contentDir);
     fs.cpSync(contentDir, copiedContentDir, { recursive: true });
     const conversion = convertAll(copiedContentDir);
     const audit = auditCorpusCopy(copiedContentDir);
