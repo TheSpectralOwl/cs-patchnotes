@@ -161,26 +161,43 @@ function contextualSections(body: string): ContextSection[] {
 
   const walkList = (list: PositionedNode, current: ContextSection | undefined) => {
     const section = requireSection(current);
-    const siblingGroups: ContextItem[][] = [];
-    const nestedBlocks: PositionedNode[] = [];
+    const siblingGroupsBySection = new Map<ContextSection, ContextItem[][]>();
 
     for (const listItem of list.children ?? []) {
       if (listItem.type !== "listItem") continue;
-      const group = (listItem.children ?? [])
-        .filter((child) => child.type === "paragraph")
-        .map((paragraph) => addItem(section, paragraph, "change"));
-      if (group.length > 0) siblingGroups.push(group);
-      nestedBlocks.push(...(listItem.children ?? []).filter((child) => child.type !== "paragraph"));
+      let localSection = section;
+      const groupsBySection = new Map<ContextSection, ContextItem[]>();
+
+      for (const child of listItem.children ?? []) {
+        if (child.type === "heading") {
+          localSection = requireSection(walkSupportedBlocks([child], localSection));
+        } else if (child.type === "paragraph") {
+          const item = addItem(requireSection(localSection), child, "change");
+          const group = groupsBySection.get(localSection) ?? [];
+          group.push(item);
+          groupsBySection.set(localSection, group);
+        } else if (child.type === "list") {
+          walkList(child, localSection);
+        } else if (child.type === "blockquote") {
+          walkSupportedBlocks(child.children ?? [], localSection);
+        }
+      }
+
+      for (const [groupSection, group] of groupsBySection) {
+        const siblingGroups = siblingGroupsBySection.get(groupSection) ?? [];
+        siblingGroups.push(group);
+        siblingGroupsBySection.set(groupSection, siblingGroups);
+      }
     }
 
-    siblingGroups.forEach((group, siblingGroupIndex) => {
-      group.forEach((item) => {
-        item.siblingGroups = siblingGroups;
-        item.siblingGroupIndex = siblingGroupIndex;
+    siblingGroupsBySection.forEach((siblingGroups) => {
+      siblingGroups.forEach((group, siblingGroupIndex) => {
+        group.forEach((item) => {
+          item.siblingGroups = siblingGroups;
+          item.siblingGroupIndex = siblingGroupIndex;
+        });
       });
     });
-
-    walkSupportedBlocks(nestedBlocks, section);
   };
 
   walkSupportedBlocks(tree.children ?? [], undefined);
