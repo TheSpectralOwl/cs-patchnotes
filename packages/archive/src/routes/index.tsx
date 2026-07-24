@@ -1,20 +1,29 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { startTransition, useDeferredValue, useEffect, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useReducer, useRef, useState } from "react";
+import { NoteMarkdown, PreviewMarkdown, normalizePreviewQueryTokens } from "../components/note-markdown";
+import {
+  NoteBodyCache,
+  archiveSearchParams,
+  createSearchState,
+  resetArchiveSearch,
+  searchStateReducer,
+  validateArchiveSearch,
+  type ArchiveSearch,
+} from "./search-state";
 
-type Game = "csgo" | "cs2";
-type Hit = { id: string; title: string; date: string; game: Game; source_url: string; matching_lines: string[]; more_changes: number };
+type PreviewItem = { markdown: string; kind: "change" | "prose" | "heading"; matched: boolean };
+type Hit = {
+  id: string;
+  title: string;
+  date: string;
+  game: Exclude<ArchiveSearch["game"], "">;
+  source_url: string;
+  sections: Array<{ heading: string; items: PreviewItem[] }>;
+};
 type Note = { body: string };
 
-export const Route = createFileRoute("/")({
-  validateSearch: (search: Record<string, unknown>) => ({
-    q: typeof search.q === "string" ? search.q : "",
-    game: search.game === "csgo" || search.game === "cs2" ? search.game : "",
-    from: typeof search.from === "string" ? search.from : "",
-    to: typeof search.to === "string" ? search.to : "",
-  }),
-  component: Archive,
-});
+export const Route = createFileRoute("/")({ validateSearch: validateArchiveSearch, component: Archive });
 
 function Archive() {
   const search = Route.useSearch();
@@ -23,89 +32,95 @@ function Archive() {
   const [game, setGame] = useState(search.game);
   const [from, setFrom] = useState(search.from);
   const [to, setTo] = useState(search.to);
-  const [hits, setHits] = useState<Hit[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [results, dispatchResults] = useReducer(searchStateReducer<Hit>, createSearchState<Hit>());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [retryNonce, setRetryNonce] = useState(0);
+  const [, setCacheVersion] = useState(0);
+  const requestId = useRef(0);
+  const cache = useState(() => new NoteBodyCache<Note>(async (id, signal) => {
+    const response = await fetch(`/api/notes/${encodeURIComponent(id)}`, { signal });
+    if (!response.ok) throw new Error("The full patch could not be loaded.");
+    return response.json() as Promise<Note>;
+  }, 4, () => setCacheVersion((version) => version + 1)))[0];
   const deferredQuery = useDeferredValue(query);
   const reduceMotion = useReducedMotion();
 
   useEffect(() => {
-    const parameters = new URLSearchParams();
-    if (deferredQuery) parameters.set("q", deferredQuery);
-    if (game) parameters.set("game", game);
-    if (from) parameters.set("from", from);
-    if (to) parameters.set("to", to);
     const controller = new AbortController();
-    setLoading(true);
-    fetch(`/api/search?${parameters}`, { signal: controller.signal })
+    const currentRequest = ++requestId.current;
+    dispatchResults({ type: "request", requestId: currentRequest });
+    fetch(`/api/search?${archiveSearchParams({ q: deferredQuery, game, from, to })}`, { signal: controller.signal })
       .then(async (response) => {
-        if (!response.ok) throw new Error("Search is currently unavailable.");
+        if (!response.ok) throw new Error("Search is unavailable");
         return response.json() as Promise<{ hits: Hit[] }>;
       })
-      .then(({ hits: nextHits }) => { setHits(nextHits); setError(""); })
-      .catch((reason: unknown) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Search is currently unavailable."); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+      .then(({ hits }) => {
+        if (controller.signal.aborted) return;
+        cache.retain(hits.map((hit) => hit.id));
+        cache.prefetch(hits.map((hit) => hit.id));
+        dispatchResults({ type: "success", requestId: currentRequest, hits });
+      })
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) dispatchResults({ type: "failure", requestId: currentRequest, error: reason instanceof Error ? reason.message : "Search is unavailable" });
+      });
     return () => controller.abort();
-  }, [deferredQuery, game, from, to]);
+  }, [cache, deferredQuery, from, game, retryNonce, to]);
 
-  function update(next: Partial<typeof search>) {
+  function update(next: Partial<ArchiveSearch>) {
     startTransition(() => navigate({ search: { q: query, game, from, to, ...next }, replace: true }));
   }
 
-  function applyFilters(next: Partial<typeof search>) {
-    const nextGame = next.game ?? game;
-    const nextFrom = next.from ?? from;
-    const nextTo = next.to ?? to;
-    setGame(nextGame);
-    setFrom(nextFrom);
-    setTo(nextTo);
+  function applyFilters(next: Partial<ArchiveSearch>) {
+    setGame(next.game ?? game);
+    setFrom(next.from ?? from);
+    setTo(next.to ?? to);
     update(next);
+  }
+
+  function reset() {
+    const cleared = resetArchiveSearch();
+    setQuery(cleared.q);
+    applyFilters(cleared);
   }
 
   return <main className="archive-shell">
     <motion.header className="masthead" initial={reduceMotion ? false : { y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ duration: 0.38, ease: "easeOut" }}><Link to="/" className="wordmark">CS <span>PATCH NOTES</span></Link><span className="masthead-status">Official archive</span></motion.header>
     <motion.section className="search-panel" initial={reduceMotion ? false : { y: 12, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ duration: 0.38, delay: 0.08, ease: "easeOut" }}>
-      <div className="search-line"><label><span className="sr-only">Search patch notes</span><input value={query} onChange={(event) => { setQuery(event.target.value); update({ q: event.target.value }); }} placeholder="Search a map, weapon, or system" autoFocus /></label><span className="result-count">{loading ? "Searching" : `${hits.length} notes`}</span></div>
+      <div className="search-line"><label><span className="sr-only">Search patch notes</span><input value={query} onChange={(event) => { setQuery(event.target.value); update({ q: event.target.value }); }} placeholder="Search a map, weapon, or system" autoFocus /></label><span className="result-count">{results.status === "loading" ? "Loading archive…" : results.status === "updating" ? "Updating results…" : `${results.hits.length} notes`}</span></div>
       <div className="filter-bar" aria-label="Archive filters">
         <div className="filter-group"><span>Game</span><div className="filter-options"><button className={!game ? "active" : ""} onClick={() => applyFilters({ game: "" })}>All games</button><button className={game === "csgo" ? "active" : ""} onClick={() => applyFilters({ game: "csgo" })}>CS:GO</button><button className={game === "cs2" ? "active" : ""} onClick={() => applyFilters({ game: "cs2" })}>CS2</button></div></div>
         <div className="filter-group"><span>Era</span><div className="filter-options"><button className={!from && !to ? "active" : ""} onClick={() => applyFilters({ from: "", to: "" })}>All time</button><button className={from === "2012-01-01" && to === "2023-09-26" ? "active" : ""} onClick={() => applyFilters({ from: "2012-01-01", to: "2023-09-26" })}>CS:GO era</button><button className={from === "2023-09-27" && !to ? "active" : ""} onClick={() => applyFilters({ from: "2023-09-27", to: "" })}>CS2 era</button></div></div>
-        {(query || game || from || to) && <button className="clear-filters" onClick={() => { setQuery(""); applyFilters({ q: "", game: "", from: "", to: "" }); }}>Clear filters</button>}
+        {(query || game || from || to) && <button className="clear-filters" onClick={reset}>Reset search</button>}
       </div>
     </motion.section>
-    {error ? <p className="state error">{error}</p> : <section className="timeline" aria-live="polite">
+    <section className="timeline" aria-live="polite" aria-busy={results.status === "loading" || results.status === "updating"}>
       <div className="spine" />
-      <AnimatePresence initial={false}>{hits.map((hit) => <TimelineEntry key={hit.id} hit={hit} expanded={expanded.has(hit.id)} reduceMotion={reduceMotion} onToggle={() => setExpanded((current) => { const next = new Set(current); next.has(hit.id) ? next.delete(hit.id) : next.add(hit.id); return next; })} />)}</AnimatePresence>
-      {!loading && hits.length === 0 && <p className="state">No notes match those filters.</p>}
-    </section>}
+      <p className="sr-only" role="status">{results.status === "updating" ? "Updating results…" : results.status === "unavailable" && results.hits.length > 0 ? "Unable to update results. Showing the previous result set." : ""}</p>
+      <AnimatePresence initial={false}>{results.hits.map((hit) => <TimelineEntry key={hit.id} hit={hit} search={search} cache={cache} expanded={expanded.has(hit.id)} reduceMotion={reduceMotion} onRefresh={() => setCacheVersion((version) => version + 1)} onToggle={() => setExpanded((current) => {
+        const next = new Set(current);
+        if (next.has(hit.id)) next.delete(hit.id);
+        else {
+          next.add(hit.id);
+          void cache.ensure(hit.id).finally(() => setCacheVersion((version) => version + 1));
+        }
+        return next;
+      })} />)}</AnimatePresence>
+      {results.status === "unavailable" && <p className="state error">{results.hits.length > 0 ? "Unable to update results. Showing the previous result set." : "Search is unavailable"} <button className="more" onClick={() => setRetryNonce((value) => value + 1)}>Retry search</button></p>}
+      {results.status === "empty" && <div className="state"><h2>No matching patch notes</h2><p>Nothing in this archive matches your current search or filters. Try another term or reset the search.</p><button className="more" onClick={reset}>Reset search</button></div>}
+    </section>
   </main>;
 }
 
-function TimelineEntry({ hit, expanded, reduceMotion, onToggle }: { hit: Hit; expanded: boolean; reduceMotion: boolean | null; onToggle(): void }) {
-  const [allLines, setAllLines] = useState<string[]>();
-  const [loadError, setLoadError] = useState(false);
-
-  useEffect(() => {
-    if (!expanded || allLines || loadError) return;
-    const controller = new AbortController();
-    fetch(`/api/notes/${encodeURIComponent(hit.id)}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Unable to load this patch.");
-        return response.json() as Promise<Note>;
-      })
-      .then((note) => setAllLines(note.body.split("\n").filter((line) => /^\s*-\s+/.test(line))))
-      .catch(() => { if (!controller.signal.aborted) setLoadError(true); });
-    return () => controller.abort();
-  }, [allLines, expanded, hit.id, loadError]);
-
-  const shownLines = expanded && allLines ? allLines : hit.matching_lines.slice(0, 3);
-  const remainingChanges = Math.max(0, (allLines?.length ?? hit.matching_lines.length + hit.more_changes) - shownLines.length);
+function TimelineEntry({ hit, search, cache, expanded, reduceMotion, onRefresh, onToggle }: { hit: Hit; search: ArchiveSearch; cache: NoteBodyCache<Note>; expanded: boolean; reduceMotion: boolean | null; onRefresh(): void; onToggle(): void }) {
+  const record = cache.record(hit.id);
+  const queryTokens = normalizePreviewQueryTokens(search.q);
+  const expandedRegionId = `patch-${hit.id}`;
   return <motion.article className="timeline-entry" layout initial={reduceMotion ? false : { y: 12 }} animate={{ y: 0 }} exit={reduceMotion ? undefined : { y: -8 }} transition={{ duration: 0.26, ease: "easeOut" }}>
-    <div className="date-gutter"><time dateTime={hit.date}>{hit.date}</time><span>{hit.game === "cs2" ? "CS2" : "CS:GO"}</span></div>
-    <div className="node" />
-    <div className="entry-content"><Link to="/notes/$id" params={{ id: hit.id }} className="note-title">{hit.title}</Link><p className="kind"><i />Official patch notes</p>
-      <motion.ul layout="position">{shownLines.map((line, index) => <motion.li layout key={`${line}-${index}`} initial={reduceMotion ? false : { opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>{line.replace(/^\s*-\s+/, "")}</motion.li>)}</motion.ul>
-      {(hit.more_changes > 0 || expanded) && <button className="more" onClick={onToggle} aria-expanded={expanded}>{expanded ? "Show fewer changes" : `+ ${remainingChanges} more changes`}</button>}
+    <div className="date-gutter"><time dateTime={hit.date}>{hit.date}</time><span>{hit.game === "cs2" ? "CS2" : "CS:GO"}</span></div><div className="node" />
+    <div className="entry-content"><Link to="/notes/$id" params={{ id: hit.id }} search={search} className="note-title">{hit.title}</Link><p className="kind"><i />Official patch notes</p>
+      {hit.sections.map((section, sectionIndex) => <section key={`${section.heading}-${sectionIndex}`} className="context-section"><p className="context-heading"><PreviewMarkdown markdown={section.heading} queryTokens={queryTokens} /></p>{section.items.map((item, itemIndex) => <p key={`${item.markdown}-${itemIndex}`} className={item.kind === "change" ? "preview-change" : "preview-prose"}><PreviewMarkdown markdown={item.markdown} queryTokens={queryTokens} /></p>)}</section>)}
+      {record?.status === "error" ? <><p className="state error">The full patch could not be loaded. Retry to load it.</p><button className="more" onClick={() => { void cache.retry(hit.id).finally(onRefresh); }}>Retry full patch</button></> : <button className="more" onClick={onToggle} aria-expanded={expanded} aria-controls={expandedRegionId}>{expanded ? "Collapse patch" : record?.status === "pending" ? "Loading full patch…" : "Show full patch"}</button>}
+      {expanded && record?.status === "ready" && record.value && <motion.div id={expandedRegionId} className="note-body" layout="position"><NoteMarkdown body={record.value.body} title={hit.title} /></motion.div>}
     </div>
   </motion.article>;
 }

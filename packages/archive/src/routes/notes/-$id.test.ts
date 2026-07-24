@@ -18,11 +18,11 @@ function initialState(id: string): NoteViewState {
 describe("noteViewReducer", () => {
   it("ignores an earlier response that resolves after a later navigation", () => {
     const secondRequest = noteViewReducer(
-      noteViewReducer(initialState("first"), { type: "request", id: "second" }),
+      noteViewReducer(initialState("first"), { type: "request", id: "second", requestId: 1 }),
       { type: "success", id: "first", requestId: 1, note: firstNote },
     );
 
-    expect(secondRequest).toEqual(initialState("second"));
+    expect(secondRequest).toEqual({ id: "second", requestId: 1, error: "" });
     expect(noteViewReducer(secondRequest, { type: "success", id: "second", requestId: 1, note: secondNote })).toEqual({
       id: "second",
       requestId: 1,
@@ -38,9 +38,9 @@ describe("noteViewReducer", () => {
       requestId: 0,
       error: "This note is unavailable.",
     });
-    const nextRequest = noteViewReducer(unavailable, { type: "request", id: "available" });
+    const nextRequest = noteViewReducer(unavailable, { type: "request", id: "available", requestId: 1 });
 
-    expect(nextRequest).toEqual(initialState("available"));
+    expect(nextRequest).toEqual({ id: "available", requestId: 1, error: "" });
     expect(noteViewReducer(nextRequest, { type: "success", id: "available", requestId: 1, note: secondNote })).toEqual({
       id: "available",
       requestId: 1,
@@ -56,7 +56,7 @@ describe("noteViewReducer", () => {
       requestId: 0,
       error: "This note is unavailable.",
     });
-    const retrying = noteViewReducer(failed, { type: "request", id: "missing" });
+    const retrying = noteViewReducer(failed, { type: "request", id: "missing", requestId: 1 });
     const lateFirstResponse = noteViewReducer(retrying, { type: "success", id: "missing", requestId: 0, note: firstNote });
 
     expect(retrying).toEqual({ id: "missing", requestId: 1, error: "" });
