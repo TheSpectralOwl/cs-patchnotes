@@ -2,25 +2,23 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { auditCorpus } = require("./audit.cjs");
+const { auditCorpus, blockingFindings } = require("./audit.cjs");
 const { convertAll } = require("./convert.cjs");
 const { fetchAllNews, isPatchNote, toRawRecord } = require("../tools/seed-raw-from-steam.cjs");
 
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
-const REQUIRED_EMPTY_FINDINGS = [
-  "invalid_frontmatter",
-  "invalid_provenance",
-  "raw_without_note",
-  "note_without_raw",
-  "residual_bbcode",
-  "list_headings",
-  "regeneration_reviews",
-];
 
 function assertAuditClean(audit) {
-  const failures = REQUIRED_EMPTY_FINDINGS.filter((finding) => audit[finding].length > 0);
-  if (failures.length > 0) {
-    throw new Error(`Corpus audit failed: ${failures.join(", ")}`);
+  const findings = blockingFindings(audit);
+  if (findings.length > 0) {
+    const failures = findings.map((finding) => {
+      const location = [finding.filename, finding.steam_gid && `gid ${finding.steam_gid}`]
+        .filter(Boolean)
+        .join("; ");
+      const prefix = location ? `${finding.class} (${location})` : finding.class;
+      return `${prefix}: ${finding.reason} Remediation: ${finding.remediation}`;
+    });
+    throw new Error(`Corpus audit failed: ${failures.join("; ")}`);
   }
 }
 
