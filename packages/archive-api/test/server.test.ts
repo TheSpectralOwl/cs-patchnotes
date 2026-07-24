@@ -73,6 +73,7 @@ describe("archive API", () => {
       ],
     });
     expect(response.json().hits[0]).not.toHaveProperty("body");
+    expect(response.json().hits[0]).toHaveProperty("body_sha256", expect.any(String));
     expect(response.json().hits[0]).not.toHaveProperty("matching_lines");
     expect(response.json().hits[0]).not.toHaveProperty("more_changes");
   });
