@@ -3,7 +3,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { assertSteamGid, resolveContainedPath } = require("./corpus.cjs");
+const { assertNoSymlinks, assertSteamGid, resolveContainedPath } = require("./corpus.cjs");
 
 const CONVERTER_VERSION = 6;
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
@@ -191,7 +191,12 @@ function writeIfChanged(filename, contents) {
 function convertAll(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR) {
   const notesDir = path.join(contentDir, "content", "notes");
   const overridesDir = path.join(contentDir, "overrides");
+  // This rejects existing links before the converter can read an override or
+  // write output through one. Concurrent hostile path replacement requires
+  // descriptor-relative no-follow operations that Node's path APIs lack.
+  assertNoSymlinks(contentDir);
   fs.mkdirSync(notesDir, { recursive: true });
+  if (fs.lstatSync(notesDir).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${notesDir}`);
 
   const records = loadRawRecords(contentDir);
   const filenameCounts = new Map();
@@ -206,6 +211,8 @@ function convertAll(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR)
 
     const target = path.join(notesDir, filename);
     const override = resolveContainedPath(overridesDir, `${raw.gid}.md`);
+    if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${target}`);
+    if (fs.existsSync(override) && fs.lstatSync(override).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${override}`);
     if (fs.existsSync(override)) {
       if (writeIfChanged(target, fs.readFileSync(override, "utf8"))) {
         summary.overridden++;

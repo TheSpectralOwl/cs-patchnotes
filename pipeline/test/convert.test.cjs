@@ -101,3 +101,12 @@ test("rejects raw GIDs that could escape the overrides directory", () => {
   fs.writeFileSync(path.join(contentDir, "raw", "steam", "2024.json"), `${JSON.stringify(raw)}\n`);
   assert.throws(() => convertAll(contentDir), /Raw Steam GID in .*must contain only decimal digits/);
 });
+
+test("rejects symlinked notes and overrides before reading or writing them", (t) => {
+  if (process.platform !== "linux") return t.skip("symlink security regression requires Linux Node");
+  const contentDir = tempCorpus();
+  const external = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-external-"));
+  fs.mkdirSync(path.join(contentDir, "content"), { recursive: true });
+  fs.symlinkSync(external, path.join(contentDir, "content", "notes"));
+  assert.throws(() => convertAll(contentDir), /Candidate corpus contains a symlink/);
+});
