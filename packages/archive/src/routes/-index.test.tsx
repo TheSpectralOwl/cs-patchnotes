@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { describe, expect, it } from "vitest";
 import { TimelineEntry, timelineTransition } from "./index";
 import {
@@ -9,7 +10,7 @@ import {
   resetArchiveSearch,
   searchStateReducer,
   validateArchiveSearch,
-} from "./search-state";
+} from "./-search-state";
 
 type Hit = { id: string };
 
@@ -148,17 +149,19 @@ describe("contextual timeline entries", () => {
     const cache = new NoteBodyCache(async () => ({ body: "# Smoke Update\n\nComplete *smoke* patch." }));
     await cache.ensure(hit.id);
 
-    const markup = renderToStaticMarkup(
-      <TimelineEntry
-        hit={hit}
-        search={search}
-        cache={cache}
-        expanded
-        reduceMotion={false}
-        onRefresh={() => undefined}
-        onToggle={() => undefined}
-      />,
-    );
+    const rootRoute = createRootRoute();
+    const noteRoute = createRoute({ getParentRoute: () => rootRoute, path: "notes/$id", component: () => null });
+    const entryRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: "/",
+      component: () => <TimelineEntry hit={hit} search={search} previewTokens={["smoke"]} cache={cache} expanded reduceMotion={false} onRefresh={() => undefined} onToggle={() => undefined} />,
+    });
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([entryRoute, noteRoute]),
+      history: createMemoryHistory({ initialEntries: ["/"] }),
+    });
+    await router.load();
+    const markup = renderToStaticMarkup(<RouterProvider router={router} />);
 
     expect(markup).toMatch(/smoke.*heading[\s\S]*smoke.*change[\s\S]*smoke[\s\S]*Second section[\s\S]*Adjacent sibling/);
     expect(markup).toContain("<em><mark>smoke</mark></em>");
@@ -167,7 +170,7 @@ describe("contextual timeline entries", () => {
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain('aria-controls="patch-note-one"');
     expect(markup).toContain('id="patch-note-one"');
-    expect(markup).toContain('href="/notes/note-one?q=Smoke&amp;game=cs2&amp;from=2023-09-27"');
+    expect(markup).toContain('href="/notes/note-one?q=Smoke&amp;game=cs2&amp;from=2023-09-27&amp;to="');
     expect(markup).toContain("Complete <em>smoke</em> patch.");
   });
 

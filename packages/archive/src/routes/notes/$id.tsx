@@ -1,7 +1,7 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { NoteMarkdown, SourceAction } from "../../components/note-markdown";
-import { validateArchiveSearch } from "../search-state";
+import { validateArchiveSearch } from "../-search-state";
 
 export type Note = { title: string; date: string; game: string; source_url: string; body: string };
 

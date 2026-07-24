@@ -10,10 +10,10 @@ import {
   searchStateReducer,
   validateArchiveSearch,
   type ArchiveSearch,
-} from "./search-state";
+} from "./-search-state";
 
-type PreviewItem = { markdown: string; kind: "change" | "prose" | "heading"; matched: boolean };
-type Hit = {
+export type PreviewItem = { markdown: string; kind: "change" | "prose" | "heading"; matched: boolean };
+export type Hit = {
   id: string;
   title: string;
   date: string;
@@ -44,6 +44,7 @@ function Archive() {
   }, 4, () => setCacheVersion((version) => version + 1)))[0];
   const deferredQuery = useDeferredValue(query);
   const reduceMotion = useReducedMotion();
+  const previewTokens = normalizePreviewQueryTokens(search.q);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -95,8 +96,8 @@ function Archive() {
     </motion.section>
     <section className="timeline" aria-live="polite" aria-busy={results.status === "loading" || results.status === "updating"}>
       <div className="spine" />
-      <p className="sr-only" role="status">{results.status === "updating" ? "Updating results…" : results.status === "unavailable" && results.hits.length > 0 ? "Unable to update results. Showing the previous result set." : ""}</p>
-      <AnimatePresence initial={false}>{results.hits.map((hit) => <TimelineEntry key={hit.id} hit={hit} search={search} cache={cache} expanded={expanded.has(hit.id)} reduceMotion={reduceMotion} onRefresh={() => setCacheVersion((version) => version + 1)} onToggle={() => setExpanded((current) => {
+      <p className="sr-only" role="status">{results.status === "loading" ? "Loading archive…" : results.status === "updating" ? "Updating results…" : results.status === "unavailable" && results.hits.length > 0 ? "Unable to update results. Showing the previous result set." : results.status === "unavailable" ? "Search is unavailable. The archive could not be loaded. Check your connection and retry." : ""}</p>
+      <AnimatePresence initial={false}>{results.hits.map((hit) => <TimelineEntry key={hit.id} hit={hit} search={search} previewTokens={previewTokens} cache={cache} expanded={expanded.has(hit.id)} reduceMotion={reduceMotion} onRefresh={() => setCacheVersion((version) => version + 1)} onToggle={() => setExpanded((current) => {
         const next = new Set(current);
         if (next.has(hit.id)) next.delete(hit.id);
         else {
@@ -105,21 +106,26 @@ function Archive() {
         }
         return next;
       })} />)}</AnimatePresence>
-      {results.status === "unavailable" && <p className="state error">{results.hits.length > 0 ? "Unable to update results. Showing the previous result set." : "Search is unavailable"} <button className="more" onClick={() => setRetryNonce((value) => value + 1)}>Retry search</button></p>}
+      {results.status === "unavailable" && (results.hits.length > 0
+        ? <p className="state error">Unable to update results. Showing the previous result set. <button className="more" onClick={() => setRetryNonce((value) => value + 1)}>Retry search</button></p>
+        : <div className="state error"><h2>Search is unavailable</h2><p>The archive could not be loaded. Check your connection and retry.</p><button className="more" onClick={() => setRetryNonce((value) => value + 1)}>Retry search</button></div>)}
       {results.status === "empty" && <div className="state"><h2>No matching patch notes</h2><p>Nothing in this archive matches your current search or filters. Try another term or reset the search.</p><button className="more" onClick={reset}>Reset search</button></div>}
     </section>
   </main>;
 }
 
-function TimelineEntry({ hit, search, cache, expanded, reduceMotion, onRefresh, onToggle }: { hit: Hit; search: ArchiveSearch; cache: NoteBodyCache<Note>; expanded: boolean; reduceMotion: boolean | null; onRefresh(): void; onToggle(): void }) {
+export function timelineTransition(reduceMotion: boolean | null) {
+  return reduceMotion ? { duration: 0 } : { duration: 0.26, ease: "easeOut" as const };
+}
+
+export function TimelineEntry({ hit, search, previewTokens, cache, expanded, reduceMotion, onRefresh, onToggle }: { hit: Hit; search: ArchiveSearch; previewTokens: string[]; cache: NoteBodyCache<Note>; expanded: boolean; reduceMotion: boolean | null; onRefresh(): void; onToggle(): void }) {
   const record = cache.record(hit.id);
-  const queryTokens = normalizePreviewQueryTokens(search.q);
   const expandedRegionId = `patch-${hit.id}`;
-  return <motion.article className="timeline-entry" layout initial={reduceMotion ? false : { y: 12 }} animate={{ y: 0 }} exit={reduceMotion ? undefined : { y: -8 }} transition={{ duration: 0.26, ease: "easeOut" }}>
+  return <motion.article className="timeline-entry" layout initial={reduceMotion ? false : { y: 12 }} animate={{ y: 0 }} exit={reduceMotion ? undefined : { y: -8 }} transition={timelineTransition(reduceMotion)}>
     <div className="date-gutter"><time dateTime={hit.date}>{hit.date}</time><span>{hit.game === "cs2" ? "CS2" : "CS:GO"}</span></div><div className="node" />
     <div className="entry-content"><Link to="/notes/$id" params={{ id: hit.id }} search={search} className="note-title">{hit.title}</Link><p className="kind"><i />Official patch notes</p>
-      {hit.sections.map((section, sectionIndex) => <section key={`${section.heading}-${sectionIndex}`} className="context-section"><p className="context-heading"><PreviewMarkdown markdown={section.heading} queryTokens={queryTokens} /></p>{section.items.map((item, itemIndex) => <p key={`${item.markdown}-${itemIndex}`} className={item.kind === "change" ? "preview-change" : "preview-prose"}><PreviewMarkdown markdown={item.markdown} queryTokens={queryTokens} /></p>)}</section>)}
-      {record?.status === "error" ? <><p className="state error">The full patch could not be loaded. Retry to load it.</p><button className="more" onClick={() => { void cache.retry(hit.id).finally(onRefresh); }}>Retry full patch</button></> : <button className="more" onClick={onToggle} aria-expanded={expanded} aria-controls={expandedRegionId}>{expanded ? "Collapse patch" : record?.status === "pending" ? "Loading full patch…" : "Show full patch"}</button>}
+      {hit.sections.map((section, sectionIndex) => <section key={`${section.heading}-${sectionIndex}`} className="context-section"><p className="context-heading"><PreviewMarkdown markdown={section.heading} queryTokens={previewTokens} /></p>{section.items.map((item, itemIndex) => <p key={`${item.markdown}-${itemIndex}`} className={item.kind === "change" ? "preview-change" : "preview-prose"}><PreviewMarkdown markdown={item.markdown} queryTokens={previewTokens} /></p>)}</section>)}
+      {record?.status === "error" ? <><p className="state error">The full patch could not be loaded. Retry to load it.</p><button className="more" onClick={() => { void cache.retry(hit.id).finally(onRefresh); }}>Retry full patch</button></> : <>{expanded && record?.status === "pending" && <p className="state" role="status">Loading full patch…</p>}<button className="more" onClick={onToggle} aria-expanded={expanded} aria-controls={expandedRegionId}>{expanded ? record?.status === "pending" ? "Loading full patch…" : "Collapse patch" : "Show full patch"}</button></>}
       {expanded && record?.status === "ready" && record.value && <motion.div id={expandedRegionId} className="note-body" layout="position"><NoteMarkdown body={record.value.body} title={hit.title} /></motion.div>}
     </div>
   </motion.article>;
