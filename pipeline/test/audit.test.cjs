@@ -191,6 +191,17 @@ test("reports malformed raw captures as deterministic blocking findings", () => 
   }
 });
 
+test("rejects duplicate raw GIDs and invalid raw hashes", () => {
+  const { contentDir, raw } = validCorpus();
+  fs.writeFileSync(path.join(contentDir, "raw", "steam", "duplicate.json"), JSON.stringify(raw));
+  const duplicateFindings = blockingFindings(auditCorpus(contentDir)).filter((finding) => finding.class === "duplicate_raw_gid");
+  assert.deepEqual(duplicateFindings.map((finding) => finding.filename), ["1.json", "duplicate.json"]);
+
+  fs.rmSync(path.join(contentDir, "raw", "steam", "duplicate.json"));
+  fs.writeFileSync(path.join(contentDir, "raw", "steam", "2.json"), JSON.stringify({ ...raw, gid: "2", body_sha256: "bad" }));
+  assert.ok(blockingFindings(auditCorpus(contentDir)).some((finding) => finding.class === "invalid_raw_record"));
+});
+
 test("sorts blocking records by class, filename, and Steam GID", () => {
   const { contentDir, raw } = validCorpus();
   writeRaw(contentDir, makeRaw({ gid: "2", title: "Second", source_url: "https://example.test/2" }));

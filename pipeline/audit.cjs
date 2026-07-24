@@ -53,6 +53,10 @@ const FINDING_CATALOG = Object.freeze({
     reason: "An immutable Steam capture is malformed and cannot be audited safely.",
     remediation: "Restore the capture from source evidence with valid GID, title, date, and body fields.",
   },
+  duplicate_raw_gid: {
+    reason: "More than one immutable Steam capture claims the same Steam GID.",
+    remediation: "Restore the captures so each Steam GID has exactly one immutable raw record.",
+  },
 });
 
 function readRawRecords(contentDir) {
@@ -65,17 +69,19 @@ function readRawRecords(contentDir) {
     .sort()) {
     try {
       const record = JSON.parse(fs.readFileSync(path.join(rawDir, filename), "utf8"));
-      const detail = !isNonEmptyString(record.gid)
+      const detail = !isNonEmptyString(record.gid) || !/^[0-9]+$/.test(record.gid)
         ? "missing or invalid gid"
         : typeof record.body !== "string"
           ? "missing or non-string body"
           : typeof record.title !== "string"
             ? "missing or non-string title"
-            : typeof record.date !== "string"
-              ? "missing or non-string date"
-              : null;
+              : typeof record.date !== "string"
+                ? "missing or non-string date"
+                : !/^[a-f0-9]{64}$/i.test(record.body_sha256)
+                  ? "missing or invalid body_sha256"
+                  : null;
       if (detail) findings.push(createFinding("invalid_raw_record", { filename, detail }));
-      else records.push(record);
+      else records.push({ ...record, filename });
     } catch {
       findings.push(createFinding("invalid_raw_record", { filename, detail: "invalid JSON" }));
     }
@@ -159,7 +165,14 @@ function blockingFindings(report) {
 
 function auditCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR) {
   const { findings, records: rawRecords } = readRawRecords(contentDir);
-  const rawByGid = new Map(rawRecords.map((record) => [record.gid, record]));
+  const rawGroupsByGid = new Map();
+  for (const raw of rawRecords) (rawGroupsByGid.get(raw.gid) || rawGroupsByGid.set(raw.gid, []).get(raw.gid)).push(raw);
+  for (const [gid, records] of rawGroupsByGid) {
+    if (records.length > 1) {
+      for (const record of records) findings.push(createFinding("duplicate_raw_gid", { filename: record.filename, steam_gid: gid }));
+    }
+  }
+  const rawByGid = new Map([...rawGroupsByGid].map(([gid, records]) => [gid, records[0]]));
   const notesDir = path.join(contentDir, "content", "notes");
   const notes = fs
     .readdirSync(notesDir)
@@ -240,6 +253,7 @@ function auditCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR
     raw_without_note: legacyFindings("raw_without_note", "steam_gid"),
     note_without_raw: legacyFindings("note_without_raw", "filename"),
     duplicate_note_gid: legacyFindings("duplicate_note_gid", "filename"),
+    duplicate_raw_gid: legacyFindings("duplicate_raw_gid", "filename"),
     residual_bbcode: legacyFindings("residual_bbcode", "filename"),
     list_headings: legacyFindings("list_headings", "filename"),
     duplicate_raw_bodies: informationalDuplicateGroups(rawRecords),
