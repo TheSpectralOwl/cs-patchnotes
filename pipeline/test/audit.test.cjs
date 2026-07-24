@@ -157,6 +157,30 @@ test("reports named actionable findings with stable reviewer-ready records", () 
   }
 });
 
+test("reports malformed raw captures as deterministic blocking findings", () => {
+  const cases = [
+    { filename: "invalid-json.json", contents: "{", detail: "invalid JSON" },
+    { filename: "missing-body.json", contents: JSON.stringify({ ...makeRaw(), body: undefined }), detail: "missing or non-string body" },
+    { filename: "non-string-title.json", contents: JSON.stringify(makeRaw({ title: 42 })), detail: "missing or non-string title" },
+  ];
+
+  for (const rawCase of cases) {
+    const { contentDir } = validCorpus();
+    fs.writeFileSync(path.join(contentDir, "raw", "steam", rawCase.filename), rawCase.contents);
+
+    const report = auditCorpus(contentDir);
+    const finding = blockingFindings(report).find((candidate) => candidate.filename === rawCase.filename);
+    assert.deepEqual(finding, {
+      class: "invalid_raw_record",
+      filename: rawCase.filename,
+      detail: rawCase.detail,
+      reason: "An immutable Steam capture is malformed and cannot be audited safely.",
+      remediation: "Restore the capture from source evidence with valid GID, title, date, and body fields.",
+    });
+    assert.equal(report.documents.raw, 1);
+  }
+});
+
 test("sorts blocking records by class, filename, and Steam GID", () => {
   const { contentDir, raw } = validCorpus();
   writeRaw(contentDir, makeRaw({ gid: "2", title: "Second", source_url: "https://example.test/2" }));

@@ -49,15 +49,38 @@ const FINDING_CATALOG = Object.freeze({
     reason: "A proposed regenerated note is awaiting review.",
     remediation: "Review the proposal and resolve it through the converter or a complete per-GID override.",
   },
+  invalid_raw_record: {
+    reason: "An immutable Steam capture is malformed and cannot be audited safely.",
+    remediation: "Restore the capture from source evidence with valid GID, title, date, and body fields.",
+  },
 });
 
 function readRawRecords(contentDir) {
   const rawDir = path.join(contentDir, "raw", "steam");
-  return fs
+  const findings = [];
+  const records = [];
+  for (const filename of fs
     .readdirSync(rawDir)
     .filter((filename) => filename.endsWith(".json"))
-    .sort()
-    .map((filename) => JSON.parse(fs.readFileSync(path.join(rawDir, filename), "utf8")));
+    .sort()) {
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(rawDir, filename), "utf8"));
+      const detail = !isNonEmptyString(record.gid)
+        ? "missing or invalid gid"
+        : typeof record.body !== "string"
+          ? "missing or non-string body"
+          : typeof record.title !== "string"
+            ? "missing or non-string title"
+            : typeof record.date !== "string"
+              ? "missing or non-string date"
+              : null;
+      if (detail) findings.push(createFinding("invalid_raw_record", { filename, detail }));
+      else records.push(record);
+    } catch {
+      findings.push(createFinding("invalid_raw_record", { filename, detail: "invalid JSON" }));
+    }
+  }
+  return { findings, records };
 }
 
 function groupBy(items, keyFor) {
@@ -120,7 +143,7 @@ function blockingFindings(report) {
 }
 
 function auditCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR) {
-  const rawRecords = readRawRecords(contentDir);
+  const { findings, records: rawRecords } = readRawRecords(contentDir);
   const rawByGid = new Map(rawRecords.map((record) => [record.gid, record]));
   const notesDir = path.join(contentDir, "content", "notes");
   const notes = fs
@@ -133,7 +156,6 @@ function auditCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR
       return { filename, ...parsed };
     });
 
-  const findings = [];
   const noteGids = new Set();
   const noteGidCounts = new Map();
   for (const note of notes) {
@@ -198,6 +220,7 @@ function auditCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR
     documents: { raw: rawRecords.length, notes: notes.length },
     findings: sortedFindings,
     invalid_frontmatter: legacyFindings("invalid_frontmatter", "filename"),
+    invalid_raw_record: legacyFindings("invalid_raw_record", "filename"),
     invalid_provenance: legacyFindings("invalid_provenance", "filename"),
     raw_without_note: legacyFindings("raw_without_note", "steam_gid"),
     note_without_raw: legacyFindings("note_without_raw", "filename"),
