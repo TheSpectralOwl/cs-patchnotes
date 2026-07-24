@@ -7,13 +7,24 @@ import { buildServer } from "../src/server.js";
 
 const apps: ReturnType<typeof buildServer>[] = [];
 
+type NoteFixture = {
+  filename: string;
+  steamGid: string;
+  sourceHash: string;
+  body: string;
+};
+
+function writeNote(contentDir: string, { filename, steamGid, sourceHash, body }: NoteFixture) {
+  const hash = createHash("sha256").update(body).digest("hex");
+  writeFileSync(join(contentDir, "content", "notes", filename), `---\ntitle: "Counter-Strike 2 Update"\ndate: 2024-01-01\ngame: cs2\nsteam_gid: "${steamGid}"\nsource_url: "https://example.test/${steamGid}"\nsource_sha256: "${sourceHash}"\ngenerated_sha256: "${hash}"\n---\n${body}`);
+}
+
 function contentFixture() {
   const contentDir = mkdtempSync(join(tmpdir(), "cs-patchnotes-api-"));
   const notesDir = join(contentDir, "content", "notes");
   mkdirSync(notesDir, { recursive: true });
   const body = "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Updated smoke behavior.\n";
-  const hash = createHash("sha256").update(body).digest("hex");
-  writeFileSync(join(notesDir, "2024-01-01-update.md"), `---\ntitle: "Counter-Strike 2 Update"\ndate: 2024-01-01\ngame: cs2\nsteam_gid: "1"\nsource_url: "https://example.test/1"\nsource_sha256: "source"\ngenerated_sha256: "${hash}"\n---\n${body}`);
+  writeNote(contentDir, { filename: "2024-01-01-update.md", steamGid: "1", sourceHash: "source", body });
   return contentDir;
 }
 
