@@ -4,7 +4,8 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { convertAll, generatedBody, parseNote, sha256, toMarkdown } = require("../convert.cjs");
+const { auditCorpus, blockingFindings } = require("../audit.cjs");
+const { convertAll, generatedBody, parseNote, renderNote, sha256, toMarkdown } = require("../convert.cjs");
 
 const fixturesDir = path.join(__dirname, "fixtures");
 
@@ -71,16 +72,20 @@ test("flags rather than overwrites a hand edit when conversion changes", () => {
   assert.match(fs.readFileSync(`${target}.new`, "utf8"), /Newly generated item/);
 });
 
-test("uses a gid override verbatim", () => {
-  const raw = fixture("2024");
+test("copies a complete audit-valid gid override verbatim", () => {
+  const raw = { ...fixture("2024"), body_sha256: sha256(fixture("2024").body) };
   const contentDir = tempCorpus(raw);
   const overrides = path.join(contentDir, "overrides");
   fs.mkdirSync(overrides, { recursive: true });
-  fs.writeFileSync(path.join(overrides, "2024.md"), "# Permanent override\n");
+  const correctedBody = generatedBody(raw)
+    .replace("- Workshop: <https://example.test/workshop>", "- Workshop: [Workshop](https://example.test/workshop)");
+  const override = renderNote(raw, correctedBody);
+  fs.writeFileSync(path.join(overrides, "2024.md"), override);
 
   const summary = convertAll(contentDir);
   assert.equal(summary.overridden, 1);
-  assert.equal(fs.readFileSync(notePath(contentDir), "utf8"), "# Permanent override\n");
+  assert.equal(fs.readFileSync(notePath(contentDir), "utf8"), override);
+  assert.deepEqual(blockingFindings(auditCorpus(contentDir)), []);
 });
 
 test("records hashes for the exact Markdown body bytes", () => {
