@@ -117,7 +117,7 @@ function Archive() {
         if (next.has(hit.id)) next.delete(hit.id);
         else {
           next.add(hit.id);
-          void cache.ensure(hit.id, hit.body_sha256).finally(() => setCacheVersion((version) => version + 1));
+          void refreshAfterCacheRequest(cache.ensure(hit.id, hit.body_sha256), () => setCacheVersion((version) => version + 1));
         }
         return next;
       })} />)}</AnimatePresence>
@@ -133,6 +133,10 @@ export function timelineTransition(reduceMotion: boolean | null) {
   return reduceMotion ? { duration: 0 } : { duration: 0.26, ease: "easeOut" as const };
 }
 
+export function refreshAfterCacheRequest<T>(request: Promise<T>, onRefresh: () => void): Promise<T | undefined> {
+  return request.finally(onRefresh).catch(() => undefined);
+}
+
 export function TimelineEntry({ hit, search, previewTokens, cache, expanded, reduceMotion, onRefresh, onToggle }: { hit: Hit; search: ArchiveSearch; previewTokens: string[]; cache: NoteBodyCache<Note>; expanded: boolean; reduceMotion: boolean | null; onRefresh(): void; onToggle(): void }) {
   const record = cache.record(hit.id, hit.body_sha256);
   const expandedRegionId = `patch-${hit.id}`;
@@ -140,7 +144,7 @@ export function TimelineEntry({ hit, search, previewTokens, cache, expanded, red
     <div className="date-gutter"><time dateTime={hit.date}>{hit.date}</time><span>{hit.game === "cs2" ? "CS2" : "CS:GO"}</span></div><div className="node" />
     <div className="entry-content"><Link to="/notes/$id" params={{ id: hit.id }} search={search} className="note-title">{hit.title}</Link><p className="kind"><i />Official patch notes</p>
       {hit.sections.map((section, sectionIndex) => <section key={`${section.heading}-${sectionIndex}`} className="context-section"><p className="context-heading"><PreviewMarkdown markdown={section.heading} queryTokens={previewTokens} /></p>{section.items.map((item, itemIndex) => <p key={`${item.markdown}-${itemIndex}`} className={item.kind === "change" ? "preview-change" : "preview-prose"}><PreviewMarkdown markdown={item.markdown} queryTokens={previewTokens} /></p>)}</section>)}
-      {record?.status === "error" ? <><p className="state error">The full patch could not be loaded. Retry to load it.</p><button className="more" onClick={() => { void cache.retry(hit.id, hit.body_sha256).finally(onRefresh); }}>Retry full patch</button></> : <>{expanded && record?.status === "pending" && <p className="state" role="status">Loading full patch…</p>}<button className="more" onClick={onToggle} aria-expanded={expanded} aria-controls={expandedRegionId}>{expanded ? record?.status === "pending" ? "Loading full patch…" : "Collapse patch" : "Show full patch"}</button></>}
+      {record?.status === "error" ? <><p className="state error">The full patch could not be loaded. Retry to load it.</p><button className="more" onClick={() => { void refreshAfterCacheRequest(cache.retry(hit.id, hit.body_sha256), onRefresh); }}>Retry full patch</button></> : <>{expanded && record?.status === "pending" && <p className="state" role="status">Loading full patch…</p>}<button className="more" onClick={onToggle} aria-expanded={expanded} aria-controls={expandedRegionId}>{expanded ? record?.status === "pending" ? "Loading full patch…" : "Collapse patch" : "Show full patch"}</button></>}
       {expanded && record?.status === "ready" && record.value && <motion.div id={expandedRegionId} className="note-body" layout="position"><NoteMarkdown body={record.value.body} title={hit.title} /></motion.div>}
     </div>
   </motion.article>;

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { describe, expect, it } from "vitest";
-import { contextualHits, TimelineEntry, timelineTransition } from "./index";
+import { contextualHits, refreshAfterCacheRequest, TimelineEntry, timelineTransition } from "./index";
 import {
   type ArchiveSearch,
   NoteBodyCache,
@@ -29,6 +29,13 @@ describe("search state", () => {
     expect(() => contextualHits({ hits: [{ id: "legacy", matching_lines: ["old preview"] }] })).toThrow(
       "Search results require the updated archive API. Deploy the API, then retry.",
     );
+  });
+
+  it("refreshes cache state while consuming failed expansion requests", async () => {
+    let refreshes = 0;
+
+    await expect(refreshAfterCacheRequest(Promise.reject(new Error("Unavailable")), () => { refreshes += 1; })).resolves.toBeUndefined();
+    expect(refreshes).toBe(1);
   });
 
   it("retains the latest successful hits while an update is pending or unavailable", () => {
