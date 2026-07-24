@@ -19,12 +19,16 @@ function writeNote(contentDir: string, { filename, steamGid, sourceHash, body }:
   writeFileSync(join(contentDir, "content", "notes", filename), `---\ntitle: "Counter-Strike 2 Update"\ndate: 2024-01-01\ngame: cs2\nsteam_gid: "${steamGid}"\nsource_url: "https://example.test/${steamGid}"\nsource_sha256: "${sourceHash}"\ngenerated_sha256: "${hash}"\n---\n${body}`);
 }
 
-function contentFixture() {
+function contentFixture(notes: NoteFixture[] = [{
+  filename: "2024-01-01-update.md",
+  steamGid: "1",
+  sourceHash: "source",
+  body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Updated smoke behavior.\n",
+}]) {
   const contentDir = mkdtempSync(join(tmpdir(), "cs-patchnotes-api-"));
   const notesDir = join(contentDir, "content", "notes");
   mkdirSync(notesDir, { recursive: true });
-  const body = "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Updated smoke behavior.\n";
-  writeNote(contentDir, { filename: "2024-01-01-update.md", steamGid: "1", sourceHash: "source", body });
+  notes.forEach((note) => writeNote(contentDir, note));
   return contentDir;
 }
 
@@ -44,5 +48,28 @@ describe("archive API", () => {
     apps.push(app);
     expect((await app.inject({ method: "POST", url: "/internal/reload" })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: "/internal/reload", headers: { authorization: "Bearer secret" } })).statusCode).toBe(200);
+  });
+
+  it("retains duplicate evidence while presenting the lower-GID canonical note", async () => {
+    const body = "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Shared duplicate smoke behavior.\n";
+    const canonicalId = "2024-01-01-canonical.md";
+    const duplicateId = "2024-01-01-duplicate.md";
+    const app = buildServer({
+      contentDir: contentFixture([
+        { filename: duplicateId, steamGid: "200", sourceHash: "duplicate-source", body },
+        { filename: canonicalId, steamGid: "100", sourceHash: "duplicate-source", body },
+      ]),
+    });
+    apps.push(app);
+
+    expect((await app.inject("/health")).json()).toMatchObject({ notes: 2, visible_notes: 1 });
+
+    const search = await app.inject("/api/search?q=duplicate&game=cs2");
+    expect(search.statusCode).toBe(200);
+    expect(search.json().hits).toEqual([expect.objectContaining({ id: canonicalId, steam_gid: "100" })]);
+
+    const duplicate = await app.inject(`/api/notes/${duplicateId}`);
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json()).toMatchObject({ id: canonicalId, steam_gid: "100", source_sha256: "duplicate-source", body });
   });
 });
