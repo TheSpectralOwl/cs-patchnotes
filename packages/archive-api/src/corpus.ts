@@ -193,8 +193,12 @@ function compareDecimalIdentifiers(left: string, right: string) {
 
 function verifyGeneratedBody(note: Note, generatedHash: string | undefined) {
   if (!generatedHash) throw new Error(`${note.id} is missing generated_sha256`);
-  const actual = createHash("sha256").update(note.body).digest("hex");
+  const actual = noteBodySha256(note);
   if (actual !== generatedHash) throw new Error(`${note.id} has changed outside the converter`);
+}
+
+export function noteBodySha256(note: Pick<Note, "body">) {
+  return createHash("sha256").update(note.body).digest("hex");
 }
 
 export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(process.cwd(), "..", "cs-patchnotes-content")): CorpusIndex {
@@ -299,7 +303,7 @@ export function searchCorpus(index: CorpusIndex, query: string, filters: { game?
         game: note.game,
         steam_gid: note.steam_gid,
         source_url: note.source_url,
-        body_sha256: createHash("sha256").update(note.body).digest("hex"),
+        body_sha256: noteBodySha256(note),
         score,
         sections: projectSections(context, queryTokens),
       }));

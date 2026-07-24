@@ -73,6 +73,7 @@ export function searchStateReducer<T>(state: SearchState<T>, action: SearchState
 
 export type NoteBodyRecord<T> = {
   id: string;
+  version?: string;
   status: "pending" | "ready" | "error";
   promise: Promise<T>;
   controller?: AbortController;
@@ -112,7 +113,7 @@ export class NoteBodyCache<T> {
   #active = 0;
 
   constructor(
-    private readonly fetcher: (id: string, signal: AbortSignal) => Promise<T>,
+    private readonly fetcher: (id: string, version: string | undefined, signal: AbortSignal) => Promise<T>,
     private readonly maxActive = 4,
     private readonly onChange?: () => void,
   ) {}
@@ -127,7 +128,7 @@ export class NoteBodyCache<T> {
     if (existing) return existing.promise;
 
     const next = deferred<T>();
-    this.#records.set(key, { id, status: "pending", promise: next.promise });
+    this.#records.set(key, { id, version, status: "pending", promise: next.promise });
     this.#queue.push(key);
     this.#startQueued();
     return next.promise;
@@ -181,7 +182,7 @@ export class NoteBodyCache<T> {
       record.controller = controller;
       this.#active += 1;
       this.onChange?.();
-      void this.fetcher(record.id, controller.signal).then(
+      void this.fetcher(record.id, record.version, controller.signal).then(
         (value) => {
           if (this.#records.get(key) !== record) return;
           record.status = "ready";

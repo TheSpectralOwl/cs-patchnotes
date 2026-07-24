@@ -101,7 +101,7 @@ describe("bounded note body cache", () => {
   it("does not reuse or restore an older body after a refreshed search result", async () => {
     const stale = deferred<{ body: string }>();
     const current = deferred<{ body: string }>();
-    const cache = new NoteBodyCache((_id, signal) => {
+    const cache = new NoteBodyCache((_id, _version, signal) => {
       signal.addEventListener("abort", () => stale.reject(new DOMException("Aborted", "AbortError")));
       return cache.record("one", "old") ? stale.promise : current.promise;
     });
@@ -114,6 +114,15 @@ describe("bounded note body cache", () => {
     await expect(replacement).resolves.toEqual({ body: "New body" });
     expect(cache.record("one", "old")).toBeUndefined();
     expect(cache.record("one", "new")).toMatchObject({ status: "ready", value: { body: "New body" } });
+  });
+
+  it("binds each note request to the body digest from its search hit", async () => {
+    const cache = new NoteBodyCache(async (id, version) => {
+      expect({ id, version }).toEqual({ id: "one", version: "expected-body" });
+      return { body: "Current body" };
+    });
+
+    await expect(cache.ensure("one", "expected-body")).resolves.toEqual({ body: "Current body" });
   });
 
   it("only replaces a failed body request after an explicit retry", async () => {

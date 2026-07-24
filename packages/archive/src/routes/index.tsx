@@ -51,8 +51,12 @@ function Archive() {
   const [retryNonce, setRetryNonce] = useState(0);
   const [, setCacheVersion] = useState(0);
   const requestId = useRef(0);
-  const cache = useState(() => new NoteBodyCache<Note>(async (id, signal) => {
-    const response = await fetch(`/api/notes/${encodeURIComponent(id)}`, { signal });
+  const cache = useState(() => new NoteBodyCache<Note>(async (id, version, signal) => {
+    const parameters = new URLSearchParams();
+    if (version) parameters.set("body_sha256", version);
+    const query = parameters.size > 0 ? `?${parameters}` : "";
+    const response = await fetch(`/api/notes/${encodeURIComponent(id)}${query}`, { signal });
+    if (response.status === 409) setRetryNonce((value) => value + 1);
     if (!response.ok) throw new Error("The full patch could not be loaded.");
     return response.json() as Promise<Note>;
   }, 4, () => setCacheVersion((version) => version + 1)))[0];
