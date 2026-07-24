@@ -208,6 +208,28 @@ describe("archive API", () => {
     }]);
   });
 
+  it("keeps direct list-item prose under a local heading without changing outer siblings", async () => {
+    const app = buildServer({ contentDir: contentFixture([{
+      filename: "2024-01-01-direct-list-heading.md",
+      steamGid: "1",
+      sourceHash: "direct-list-heading-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- ### Networking\n\n  Packet synchronization changed.\n- Outer smoke behavior remains.\n",
+    }]), reloadToken: "secret" });
+    apps.push(app);
+
+    const synchronization = await app.inject("/api/search?q=synchronization");
+    expect(synchronization.json().hits[0].sections).toEqual([{
+      heading: "Networking",
+      items: [{ markdown: "Packet synchronization changed.", kind: "change", matched: true }],
+    }]);
+
+    const smoke = await app.inject("/api/search?q=smoke");
+    expect(smoke.json().hits[0].sections).toEqual([{
+      heading: "Gameplay",
+      items: [{ markdown: "Outer smoke behavior remains.", kind: "change", matched: true }],
+    }]);
+  });
+
   it("uses the earliest headed source preview for title-only hits and unfiltered browse", async () => {
     const app = buildServer({ contentDir: contentFixture([
       {
