@@ -143,10 +143,22 @@ function contextualSections(body: string): ContextSection[] {
     return item;
   };
 
+  const walkSupportedBlocks = (nodes: PositionedNode[]) => {
+    for (const node of nodes) {
+      if (node.type === "paragraph") {
+        addItem(requireSection(), node, "prose");
+      } else if (node.type === "list") {
+        walkList(node);
+      } else if (node.type === "blockquote") {
+        walkSupportedBlocks(node.children ?? []);
+      }
+    }
+  };
+
   const walkList = (list: PositionedNode) => {
     const section = requireSection();
     const siblingGroups: ContextItem[][] = [];
-    const nestedLists: PositionedNode[] = [];
+    const nestedBlocks: PositionedNode[] = [];
 
     for (const listItem of list.children ?? []) {
       if (listItem.type !== "listItem") continue;
@@ -154,7 +166,7 @@ function contextualSections(body: string): ContextSection[] {
         .filter((child) => child.type === "paragraph")
         .map((paragraph) => addItem(section, paragraph, "change"));
       if (group.length > 0) siblingGroups.push(group);
-      nestedLists.push(...(listItem.children ?? []).filter((child) => child.type === "list"));
+      nestedBlocks.push(...(listItem.children ?? []).filter((child) => child.type !== "paragraph"));
     }
 
     siblingGroups.forEach((group, siblingGroupIndex) => {
@@ -164,7 +176,7 @@ function contextualSections(body: string): ContextSection[] {
       });
     });
 
-    for (const nestedList of nestedLists) walkList(nestedList);
+    walkSupportedBlocks(nestedBlocks);
   };
 
   for (const node of tree.children ?? []) {
@@ -173,10 +185,8 @@ function contextualSections(body: string): ContextSection[] {
       current = { heading, items: [] };
       sections.push(current);
       addItem(current, node, "heading");
-    } else if (node.type === "paragraph") {
-      addItem(requireSection(), node, "prose");
-    } else if (node.type === "list") {
-      walkList(node);
+    } else {
+      walkSupportedBlocks([node]);
     }
   }
 
@@ -228,7 +238,11 @@ export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(proce
   const contexts = notes.map((note) => contextualSections(note.body));
   notes.forEach((note, noteIndex) => {
     const frequencies = new Map<string, number>();
-    for (const token of tokens(`${note.title}\n${note.body}`)) frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
+    const contextualMarkdown = contexts[noteIndex]
+      .flatMap((section) => section.items)
+      .map((item) => item.markdown)
+      .join("\n");
+    for (const token of tokens(`${note.title}\n${contextualMarkdown}`)) frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
     for (const [token, count] of frequencies) terms.set(token, [...(terms.get(token) ?? []), [noteIndex, count]]);
   });
   return { notes, terms, contexts };
@@ -245,7 +259,7 @@ function nearestChange(items: ContextItem[], matched: ContextItem) {
     .sort((left, right) => Math.abs(left.order - matched.order) - Math.abs(right.order - matched.order))[0];
 }
 
-function projectSections(sections: ContextSection[], queryTokens: string[]): PreviewSection[] {
+function projectSections(sections: ContextSection[], queryTokens: string[], allowFallback: boolean): PreviewSection[] {
   const matchedSections = sections.flatMap((section) => {
     const matched = queryTokens.length === 0 ? [] : section.items.filter((item) => matchesTokens(item.markdown, queryTokens));
     if (matched.length === 0) return [];
@@ -275,7 +289,7 @@ function projectSections(sections: ContextSection[], queryTokens: string[]): Pre
     }];
   });
 
-  if (matchedSections.length > 0) return matchedSections;
+  if (matchedSections.length > 0 || !allowFallback) return matchedSections;
   const fallback = sections.find((section) => section.items.length > 0);
   if (!fallback) return [];
   const item = fallback.items[0];
@@ -290,13 +304,18 @@ export function searchCorpus(index: CorpusIndex, query: string, filters: { game?
     for (const [noteIndex, count] of index.terms.get(token) ?? []) scores.set(noteIndex, (scores.get(noteIndex) ?? 0) + count);
   }
   return [...scores]
-    .map(([noteIndex, score]) => ({ note: index.notes[noteIndex], context: index.contexts[noteIndex], score }))
+    .map(([noteIndex, score]) => ({
+      note: index.notes[noteIndex],
+      context: index.contexts[noteIndex],
+      score,
+      allowFallback: queryTokens.length === 0 || matchesTokens(index.notes[noteIndex].title, queryTokens),
+    }))
     .filter(({ note }) => !note.duplicate_of)
     .filter(({ note }) => !filters.game || note.game === filters.game)
     .filter(({ note }) => !filters.from || note.date >= filters.from)
     .filter(({ note }) => !filters.to || note.date <= filters.to)
     .sort((left, right) => right.score - left.score || right.note.date.localeCompare(left.note.date))
-    .map(({ note, context, score }) => ({
+    .map(({ note, context, score, allowFallback }) => ({
         id: note.id,
         title: note.title,
         date: note.date,
@@ -305,7 +324,7 @@ export function searchCorpus(index: CorpusIndex, query: string, filters: { game?
         source_url: note.source_url,
         body_sha256: noteBodySha256(note),
         score,
-        sections: projectSections(context, queryTokens),
+        sections: projectSections(context, queryTokens, allowFallback),
       }));
 }
 

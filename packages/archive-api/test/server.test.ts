@@ -145,6 +145,23 @@ describe("archive API", () => {
     }]);
   });
 
+  it("keeps blockquote prose under its authored heading instead of falling back to an unrelated section", async () => {
+    const app = buildServer({ contentDir: contentFixture([{
+      filename: "2024-01-01-blockquote.md",
+      steamGid: "1",
+      sourceHash: "blockquote-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n> Smoke behavior changed in this quoted source note.\n\n## Maps\n\n- Unrelated map update.\n",
+    }]), reloadToken: "secret" });
+    apps.push(app);
+
+    const response = await app.inject("/api/search?q=smoke");
+
+    expect(response.json().hits[0].sections).toEqual([{
+      heading: "Gameplay",
+      items: [{ markdown: "Smoke behavior changed in this quoted source note.", kind: "prose", matched: true }],
+    }]);
+  });
+
   it("uses the earliest headed source preview for title-only hits and unfiltered browse", async () => {
     const app = buildServer({ contentDir: contentFixture([
       {
