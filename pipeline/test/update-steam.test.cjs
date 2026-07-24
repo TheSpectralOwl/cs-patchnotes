@@ -10,6 +10,15 @@ function steamItem(body = "[ GAMEPLAY ]\n- Updated smoke.\n") {
   return { gid: "1", title: "Counter-Strike 2 Update", url: "https://example.test/1", feed_type: 1, feedname: "steam_community_announcements", date: 1_704_067_200, contents: body, tags: ["patchnotes"] };
 }
 
+function auditReport(findings = [], informational = {}) {
+  return {
+    documents: { raw: 1, notes: 1 },
+    findings,
+    duplicate_raw_bodies: informational.duplicate_raw_bodies || [],
+    same_day_title_collisions: informational.same_day_title_collisions || [],
+  };
+}
+
 test("adds new captures and converts them to Markdown", async () => {
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-"));
   const fetchNews = async () => new Map([["1", steamItem()]]);
@@ -40,4 +49,45 @@ test("reports additions without writing during a dry run", async () => {
   const result = await updateSteam(contentDir, { fetchNews: async () => new Map([["1", steamItem()]]), dryRun: true });
   assert.equal(result.added, 1);
   assert.equal(fs.existsSync(path.join(contentDir, "raw")), false);
+});
+
+test("rejects a structured blocking audit finding with actionable record details", async () => {
+  const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-audit-blocking-"));
+  const finding = {
+    class: "invalid_provenance",
+    filename: "2024-01-01-counter-strike-2-update.md",
+    steam_gid: "1",
+    reason: "The source hash differs from the immutable capture.",
+    remediation: "Regenerate the note from the immutable capture.",
+  };
+
+  await assert.rejects(
+    updateSteam(contentDir, {
+      fetchNews: async () => new Map([["1", steamItem()]]),
+      audit: () => auditReport([finding]),
+    }),
+    /Corpus audit failed: invalid_provenance \(2024-01-01-counter-strike-2-update\.md; gid 1\): The source hash differs from the immutable capture\. Remediation: Regenerate the note from the immutable capture\./,
+  );
+});
+
+test("keeps informational duplicate evidence from rejecting an update", async () => {
+  const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-audit-informational-"));
+  const report = auditReport([], {
+    duplicate_raw_bodies: [{ body_sha256: "a", gids: ["1", "2"] }],
+    same_day_title_collisions: [{ date: "2024-01-01", title: "Example", gids: ["1", "2"] }],
+  });
+
+  const result = await updateSteam(contentDir, {
+    fetchNews: async () => new Map([["1", steamItem()]]),
+    audit: () => report,
+  });
+
+  assert.equal(result.added, 1);
+  assert.equal(result.audit, report);
+});
+
+test("delegates update eligibility to the audit-owned predicate", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "update-steam.cjs"), "utf8");
+  assert.match(source, /blockingFindings/);
+  assert.doesNotMatch(source, /REQUIRED_EMPTY_FINDINGS/);
 });
