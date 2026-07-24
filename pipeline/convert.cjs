@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { assertNoSymlinks, assertRawRecord, resolveContainedPath } = require("./corpus.cjs");
 
 const CONVERTER_VERSION = 6;
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
@@ -130,14 +131,14 @@ function renderNote(raw, body) {
   const frontmatter = [
     "---",
     `title: ${JSON.stringify(raw.title)}`,
-    `date: ${raw.date}`,
-    `game: ${raw.game}`,
-    `content_kind: ${raw.content_kind}`,
-    `body_format: ${raw.body_format}`,
+    `date: ${JSON.stringify(raw.date)}`,
+    `game: ${JSON.stringify(raw.game)}`,
+    `content_kind: ${JSON.stringify(raw.content_kind)}`,
+    `body_format: ${JSON.stringify(raw.body_format)}`,
     `steam_gid: ${JSON.stringify(raw.gid)}`,
     `source_url: ${JSON.stringify(raw.source_url)}`,
     `source_sha256: ${JSON.stringify(raw.body_sha256)}`,
-    `converter_version: ${CONVERTER_VERSION}`,
+    `converter_version: ${JSON.stringify(CONVERTER_VERSION)}`,
     `generated_sha256: ${JSON.stringify(sha256(body))}`,
     "---",
     "",
@@ -172,7 +173,11 @@ function loadRawRecords(contentDir) {
     .readdirSync(rawDir)
     .filter((filename) => filename.endsWith(".json"))
     .sort()
-    .map((filename) => JSON.parse(fs.readFileSync(path.join(rawDir, filename), "utf8")));
+    .map((filename) => {
+      const raw = JSON.parse(fs.readFileSync(path.join(rawDir, filename), "utf8"));
+      assertRawRecord(raw, `Raw record in ${filename}`);
+      return raw;
+    });
 }
 
 function writeIfChanged(filename, contents) {
@@ -186,7 +191,12 @@ function writeIfChanged(filename, contents) {
 function convertAll(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR) {
   const notesDir = path.join(contentDir, "content", "notes");
   const overridesDir = path.join(contentDir, "overrides");
+  // This rejects existing links before the converter can read an override or
+  // write output through one. Concurrent hostile path replacement requires
+  // descriptor-relative no-follow operations that Node's path APIs lack.
+  assertNoSymlinks(contentDir);
   fs.mkdirSync(notesDir, { recursive: true });
+  if (fs.lstatSync(notesDir).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${notesDir}`);
 
   const records = loadRawRecords(contentDir);
   const filenameCounts = new Map();
@@ -199,8 +209,10 @@ function convertAll(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR)
   for (const raw of records) {
     const filename = noteFilename(raw, filenameCounts.get(noteFilename(raw)) > 1);
 
-    const target = path.join(notesDir, filename);
-    const override = path.join(overridesDir, `${raw.gid}.md`);
+    const target = resolveContainedPath(notesDir, filename);
+    const override = resolveContainedPath(overridesDir, `${raw.gid}.md`);
+    if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${target}`);
+    if (fs.existsSync(override) && fs.lstatSync(override).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${override}`);
     if (fs.existsSync(override)) {
       if (writeIfChanged(target, fs.readFileSync(override, "utf8"))) {
         summary.overridden++;

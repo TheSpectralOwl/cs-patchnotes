@@ -3,53 +3,86 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { auditCorpus } = require("./audit.cjs");
+const { auditCorpus, blockingFindings } = require("./audit.cjs");
+const { assertNoSymlinks } = require("./corpus.cjs");
 const { convertAll } = require("./convert.cjs");
 
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
-const REQUIRED_EMPTY_FINDINGS = [
-  "invalid_frontmatter",
-  "invalid_provenance",
-  "raw_without_note",
-  "note_without_raw",
-  "residual_bbcode",
-  "list_headings",
-  "regeneration_reviews",
-];
 
-function verifyCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR) {
+function compareFindings(left, right) {
+  return left.class.localeCompare(right.class)
+    || (left.filename || "").localeCompare(right.filename || "")
+    || (left.steam_gid || "").localeCompare(right.steam_gid || "");
+}
+
+function findingClassCounts(findings) {
+  return Object.fromEntries([...findings
+    .reduce((counts, finding) => counts.set(finding.class, (counts.get(finding.class) || 0) + 1), new Map())
+    .entries()]
+    .sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function auditFailures(findings) {
+  return Object.entries(findingClassCounts(findings))
+    .map(([findingClass, count]) => `${findingClass} has ${count} finding(s)`);
+}
+
+function emptyConversionSummary() {
+  return { created: 0, regenerated: 0, unchanged: 0, preserved: 0, overridden: 0, conflicts: [] };
+}
+
+function verifyCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR, options = {}) {
+  const auditCorpusCopy = options.audit || auditCorpus;
   const temporaryDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-verify-"));
   const copiedContentDir = path.join(temporaryDir, "content");
   try {
+    assertNoSymlinks(contentDir);
     fs.cpSync(contentDir, copiedContentDir, { recursive: true });
+    const preConversionAudit = auditCorpusCopy(copiedContentDir);
+    const preConversionFindings = blockingFindings(preConversionAudit);
+    if (preConversionFindings.length > 0) {
+      return {
+        ok: false,
+        failures: auditFailures(preConversionFindings),
+        conversion: emptyConversionSummary(),
+        audit: preConversionAudit,
+        blocking_findings: preConversionFindings,
+      };
+    }
     const conversion = convertAll(copiedContentDir);
-    const audit = auditCorpus(copiedContentDir);
+    const audit = auditCorpusCopy(copiedContentDir);
+    const blocking_findings = blockingFindings(audit);
     const failures = [];
     if (conversion.created || conversion.regenerated || conversion.overridden || conversion.conflicts.length) {
       failures.push("generated Markdown is not current with the converter");
     }
-    for (const finding of REQUIRED_EMPTY_FINDINGS) {
-      if (audit[finding].length > 0) failures.push(`${finding} has ${audit[finding].length} finding(s)`);
-    }
-    return { ok: failures.length === 0, failures, conversion, audit };
+    failures.push(...auditFailures(blocking_findings));
+    return { ok: failures.length === 0, failures, conversion, audit, blocking_findings };
   } finally {
     fs.rmSync(temporaryDir, { recursive: true, force: true });
   }
 }
 
-if (require.main === module) {
-  const result = verifyCorpus();
-  console.log(JSON.stringify({
+function formatVerificationResult(result) {
+  const informational = {
+    duplicate_raw_bodies: (result.audit.duplicate_raw_bodies || []).length,
+    same_day_title_collisions: (result.audit.same_day_title_collisions || []).length,
+  };
+  return {
     ok: result.ok,
     failures: result.failures,
     documents: result.audit.documents,
     conversion: result.conversion,
-    informational_findings: {
-      duplicate_raw_bodies: result.audit.duplicate_raw_bodies.length,
-      same_day_title_collisions: result.audit.same_day_title_collisions.length,
-    },
-  }, null, 2));
+    blocking_class_counts: findingClassCounts(result.blocking_findings),
+    blocking_findings: [...result.blocking_findings].sort(compareFindings),
+    informational_findings: informational,
+  };
+}
+
+if (require.main === module) {
+  const result = verifyCorpus();
+  console.log(JSON.stringify(formatVerificationResult(result), null, 2));
   if (!result.ok) process.exitCode = 1;
 }
 
-module.exports = { verifyCorpus };
+module.exports = { formatVerificationResult, verifyCorpus };

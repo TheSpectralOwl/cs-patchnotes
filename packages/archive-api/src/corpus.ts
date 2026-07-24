@@ -30,7 +30,7 @@ export type CorpusIndex = {
 function parseFrontmatter(contents: string) {
   const match = contents.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   if (!match) throw new Error("Note is missing frontmatter");
-  const frontmatter: Record<string, string> = {};
+  const frontmatter: Record<string, unknown> = {};
   for (const line of match[1].split("\n")) {
     const separator = line.indexOf(": ");
     if (separator === -1) continue;
@@ -45,8 +45,37 @@ function parseFrontmatter(contents: string) {
   return { frontmatter, body: match[2] };
 }
 
+function requiredFrontmatterString(frontmatter: Record<string, unknown>, field: string, id: string) {
+  const value = frontmatter[field];
+  if (typeof value !== "string" || value.length === 0) throw new Error(`${id} has incomplete frontmatter`);
+  return value;
+}
+
+function validatedNote(id: string, frontmatter: Record<string, unknown>, body: string): Note {
+  const game = requiredFrontmatterString(frontmatter, "game", id);
+  if (game !== "csgo" && game !== "cs2") throw new Error(`${id} has invalid game frontmatter`);
+  return {
+    id,
+    title: requiredFrontmatterString(frontmatter, "title", id),
+    date: requiredFrontmatterString(frontmatter, "date", id),
+    game,
+    steam_gid: requiredFrontmatterString(frontmatter, "steam_gid", id),
+    source_url: requiredFrontmatterString(frontmatter, "source_url", id),
+    source_sha256: requiredFrontmatterString(frontmatter, "source_sha256", id),
+    body,
+  };
+}
+
 function tokens(value: string) {
   return value.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+function compareDecimalIdentifiers(left: string, right: string) {
+  const normalizedLeft = left.replace(/^0+(?=\d)/, "");
+  const normalizedRight = right.replace(/^0+(?=\d)/, "");
+  return normalizedLeft.length - normalizedRight.length
+    || normalizedLeft.localeCompare(normalizedRight)
+    || left.localeCompare(right);
 }
 
 function verifyGeneratedBody(note: Note, generatedHash: string | undefined) {
@@ -62,27 +91,16 @@ export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(proce
     .sort()
     .map((id) => {
       const { frontmatter, body } = parseFrontmatter(readFileSync(join(notesDir, id), "utf8"));
-      const note: Note = {
-        id,
-        title: frontmatter.title,
-        date: frontmatter.date,
-        game: frontmatter.game as Game,
-        steam_gid: frontmatter.steam_gid,
-        source_url: frontmatter.source_url,
-        source_sha256: frontmatter.source_sha256,
-        body,
-      };
-      if (!note.title || !note.date || !note.game || !note.steam_gid || !note.source_url || !note.source_sha256) {
-        throw new Error(`${id} has incomplete frontmatter`);
-      }
-      verifyGeneratedBody(note, frontmatter.generated_sha256);
+      const note = validatedNote(id, frontmatter, body);
+      const generatedHash = frontmatter.generated_sha256;
+      verifyGeneratedBody(note, typeof generatedHash === "string" ? generatedHash : undefined);
       return note;
     });
 
   const canonicalByHash = new Map<string, Note>();
   for (const note of notes) {
     const canonical = canonicalByHash.get(note.source_sha256);
-    if (!canonical || note.steam_gid.localeCompare(canonical.steam_gid) < 0) canonicalByHash.set(note.source_sha256, note);
+    if (!canonical || compareDecimalIdentifiers(note.steam_gid, canonical.steam_gid) < 0) canonicalByHash.set(note.source_sha256, note);
   }
   for (const note of notes) {
     const canonical = canonicalByHash.get(note.source_sha256);

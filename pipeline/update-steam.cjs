@@ -2,26 +2,38 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { auditCorpus } = require("./audit.cjs");
+const { auditCorpus, blockingFindings } = require("./audit.cjs");
+const { assertNoSymlinks, assertSteamGid, corpusSnapshot } = require("./corpus.cjs");
 const { convertAll } = require("./convert.cjs");
 const { fetchAllNews, isPatchNote, toRawRecord } = require("../tools/seed-raw-from-steam.cjs");
 
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
-const REQUIRED_EMPTY_FINDINGS = [
-  "invalid_frontmatter",
-  "invalid_provenance",
-  "raw_without_note",
-  "note_without_raw",
-  "residual_bbcode",
-  "list_headings",
-  "regeneration_reviews",
-];
 
 function assertAuditClean(audit) {
-  const failures = REQUIRED_EMPTY_FINDINGS.filter((finding) => audit[finding].length > 0);
-  if (failures.length > 0) {
-    throw new Error(`Corpus audit failed: ${failures.join(", ")}`);
+  const findings = blockingFindings(audit);
+  if (findings.length > 0) {
+    const failures = findings.map((finding) => {
+      const location = [finding.filename, finding.steam_gid && `gid ${finding.steam_gid}`]
+        .filter(Boolean)
+        .join("; ");
+      const prefix = location ? `${finding.class} (${location})` : finding.class;
+      return `${prefix}: ${finding.reason} Remediation: ${finding.remediation}`;
+    });
+    throw new Error(`Corpus audit failed: ${failures.join("; ")}`);
   }
+}
+
+function publishStagedCorpus(contentDir, stagedContentDir, sourceSnapshot) {
+  if (corpusSnapshot(contentDir) !== sourceSnapshot) throw new Error("Source corpus changed while the Steam update was staged");
+  // The snapshot detects edits before publication; it does not claim to close
+  // hostile TOCTOU races that require descriptor-relative filesystem APIs.
+  const backupDir = path.join(path.dirname(stagedContentDir), "backup");
+  fs.renameSync(contentDir, backupDir);
+  try { fs.renameSync(stagedContentDir, contentDir); } catch (error) {
+    fs.renameSync(backupDir, contentDir);
+    throw error;
+  }
+  fs.rmSync(backupDir, { recursive: true, force: true });
 }
 
 async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR, options = {}) {
@@ -30,9 +42,17 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   const audit = options.audit || auditCorpus;
   const dryRun = options.dryRun || false;
   const rawDir = path.join(contentDir, "raw", "steam");
+  assertNoSymlinks(contentDir);
   const fetched = await fetchNews();
   const items = fetched instanceof Map ? [...fetched.values()] : fetched;
-  const accepted = items.filter(isPatchNote).sort((left, right) => left.gid.localeCompare(right.gid));
+  const accepted = items.filter(isPatchNote);
+  const seenGids = new Set();
+  for (const item of accepted) {
+    assertSteamGid(item.gid, "Steam feed GID");
+    if (seenGids.has(item.gid)) throw new Error(`Steam feed contains duplicate GID: ${item.gid}`);
+    seenGids.add(item.gid);
+  }
+  accepted.sort((left, right) => left.gid.localeCompare(right.gid));
   const planned = [];
   const summary = { fetched: items.length, accepted: accepted.length, existing: 0, added: 0, conflicts: [], dry_run: dryRun };
 
@@ -43,7 +63,7 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
       if (fs.readFileSync(filename, "utf8") !== contents) summary.conflicts.push(filename);
       else summary.existing++;
     } else {
-      planned.push({ filename, contents });
+      planned.push({ gid: item.gid, contents });
     }
   }
 
@@ -51,16 +71,33 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   summary.added = planned.length;
   if (dryRun) return summary;
 
-  fs.mkdirSync(rawDir, { recursive: true });
-  for (const entry of planned) fs.writeFileSync(entry.filename, entry.contents);
-  summary.conversion = convert(contentDir);
-  if (summary.conversion.conflicts.length > 0) {
-    summary.conflicts = summary.conversion.conflicts.map((conflict) => conflict.note);
+  const sourceSnapshot = corpusSnapshot(contentDir);
+  const stagingDir = fs.mkdtempSync(path.join(path.dirname(contentDir), `.${path.basename(contentDir)}.staging-`));
+  const stagedContentDir = path.join(stagingDir, "content");
+  try {
+    fs.cpSync(contentDir, stagedContentDir, { recursive: true, dereference: false });
+    assertNoSymlinks(stagedContentDir);
+    const stagedRawDir = path.join(stagedContentDir, "raw", "steam");
+    fs.mkdirSync(stagedRawDir, { recursive: true });
+    for (const entry of planned) {
+      fs.writeFileSync(path.join(stagedRawDir, `${entry.gid}.json`), entry.contents);
+    }
+
+    summary.conversion = convert(stagedContentDir);
+    if (summary.conversion.conflicts.length > 0) {
+      summary.conflicts = summary.conversion.conflicts.map((conflict) => path.join(
+        contentDir,
+        path.relative(stagedContentDir, conflict.note),
+      ));
+      return summary;
+    }
+    summary.audit = audit(stagedContentDir);
+    assertAuditClean(summary.audit);
+    publishStagedCorpus(contentDir, stagedContentDir, sourceSnapshot);
     return summary;
+  } finally {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
   }
-  summary.audit = audit(contentDir);
-  assertAuditClean(summary.audit);
-  return summary;
 }
 
 if (require.main === module) {
