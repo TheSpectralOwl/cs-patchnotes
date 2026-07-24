@@ -49,6 +49,14 @@ function tokens(value: string) {
   return value.toLowerCase().match(/[a-z0-9]+/g) ?? [];
 }
 
+function compareDecimalIdentifiers(left: string, right: string) {
+  const normalizedLeft = left.replace(/^0+(?=\d)/, "");
+  const normalizedRight = right.replace(/^0+(?=\d)/, "");
+  return normalizedLeft.length - normalizedRight.length
+    || normalizedLeft.localeCompare(normalizedRight)
+    || left.localeCompare(right);
+}
+
 function verifyGeneratedBody(note: Note, generatedHash: string | undefined) {
   if (!generatedHash) throw new Error(`${note.id} is missing generated_sha256`);
   const actual = createHash("sha256").update(note.body).digest("hex");
@@ -82,7 +90,7 @@ export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(proce
   const canonicalByHash = new Map<string, Note>();
   for (const note of notes) {
     const canonical = canonicalByHash.get(note.source_sha256);
-    if (!canonical || note.steam_gid.localeCompare(canonical.steam_gid) < 0) canonicalByHash.set(note.source_sha256, note);
+    if (!canonical || compareDecimalIdentifiers(note.steam_gid, canonical.steam_gid) < 0) canonicalByHash.set(note.source_sha256, note);
   }
   for (const note of notes) {
     const canonical = canonicalByHash.get(note.source_sha256);

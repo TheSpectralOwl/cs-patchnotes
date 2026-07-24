@@ -56,8 +56,8 @@ describe("archive API", () => {
     const duplicateId = "2024-01-01-duplicate.md";
     const app = buildServer({
       contentDir: contentFixture([
-        { filename: duplicateId, steamGid: "200", sourceHash: "duplicate-source", body },
-        { filename: canonicalId, steamGid: "100", sourceHash: "duplicate-source", body },
+        { filename: duplicateId, steamGid: "10", sourceHash: "duplicate-source", body },
+        { filename: canonicalId, steamGid: "2", sourceHash: "duplicate-source", body },
       ]),
     });
     apps.push(app);
@@ -66,10 +66,10 @@ describe("archive API", () => {
 
     const search = await app.inject("/api/search?q=duplicate&game=cs2");
     expect(search.statusCode).toBe(200);
-    expect(search.json().hits).toEqual([expect.objectContaining({ id: canonicalId, steam_gid: "100" })]);
+    expect(search.json().hits).toEqual([expect.objectContaining({ id: canonicalId, steam_gid: "2" })]);
 
     const duplicate = await app.inject(`/api/notes/${duplicateId}`);
     expect(duplicate.statusCode).toBe(200);
-    expect(duplicate.json()).toMatchObject({ id: canonicalId, steam_gid: "100", source_sha256: "duplicate-source", body });
+    expect(duplicate.json()).toMatchObject({ id: canonicalId, steam_gid: "2", source_sha256: "duplicate-source", body });
   });
 });
