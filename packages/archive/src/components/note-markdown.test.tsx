@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   bodyForRender,
   NoteMarkdown,
+  normalizePreviewQueryTokens,
   OriginalSourceAction,
   PreviewMarkdown,
   safeWebHref,
@@ -150,6 +151,10 @@ describe("OriginalSourceAction", () => {
 });
 
 describe("PreviewMarkdown", () => {
+  it("normalizes caller-owned query tokens in first-occurrence order", () => {
+    expect(normalizePreviewQueryTokens("Smoke smoke CS2 smoke2")).toEqual(["smoke", "cs2", "smoke2"]);
+  });
+
   it("keeps compact authored inline meaning and accepted outbound links", () => {
     const markup = renderPreview("*Gameplay* **update**: [Read the Smoke notes](https://example.test/patch)", ["smoke"]);
 

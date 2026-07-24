@@ -15,6 +15,17 @@ type SourceActionProps = {
   href: string;
 };
 
+type PreviewMarkdownProps = {
+  markdown: string;
+  queryTokens: string[];
+};
+
+type HastNode = {
+  type: string;
+  value?: string;
+  children?: HastNode[];
+};
+
 export function bodyForRender(body: string, title: string): string {
   const duplicateTitle = `# ${title}`;
 
@@ -52,10 +63,67 @@ const markdownComponents = {
   },
 } satisfies Components;
 
+const previewComponents = {
+  ...markdownComponents,
+  p({ children, node: _node }) {
+    return <>{children}</>;
+  },
+} satisfies Components;
+
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function literalMarkPlugin(queryTokens: string[]) {
+  const matcher = queryTokens.length > 0
+    ? new RegExp(`(${queryTokens.map(escapeRegularExpression).join("|")})`, "gi")
+    : undefined;
+
+  return (tree: HastNode) => {
+    if (!matcher) return;
+
+    const markTextNode = (node: HastNode): HastNode[] => {
+      if (node.type === "text" && node.value) {
+        const parts = node.value.split(matcher);
+
+        if (parts.length > 1) {
+          return parts.map((part, index) => index % 2 === 1
+            ? { type: "element", tagName: "mark", properties: {}, children: [{ type: "text", value: part }] }
+            : { type: "text", value: part });
+        }
+      }
+
+      if (node.children) node.children = node.children.flatMap(markTextNode);
+      return [node];
+    };
+
+    if (tree.children) tree.children = tree.children.flatMap(markTextNode);
+  };
+}
+
+export function normalizePreviewQueryTokens(value: string): string[] {
+  return [...new Set(value.toLowerCase().match(/[a-z0-9]+/g) ?? [])];
+}
+
 export function NoteMarkdown({ body, title }: NoteMarkdownProps) {
   return (
     <Markdown components={markdownComponents} urlTransform={safeWebHref}>
       {bodyForRender(body, title)}
+    </Markdown>
+  );
+}
+
+export function PreviewMarkdown({ markdown, queryTokens }: PreviewMarkdownProps) {
+  return (
+    <Markdown
+      allowedElements={["p", "em", "strong", "a", "mark"]}
+      components={previewComponents}
+      rehypePlugins={[[literalMarkPlugin, queryTokens]]}
+      skipHtml
+      unwrapDisallowed
+      urlTransform={safeWebHref}
+    >
+      {markdown}
     </Markdown>
   );
 }
