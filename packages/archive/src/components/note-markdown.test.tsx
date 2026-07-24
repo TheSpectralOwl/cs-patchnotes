@@ -176,6 +176,13 @@ describe("PreviewMarkdown", () => {
     expect(markup).not.toContain("https://example.test/destination<mark>");
   });
 
+  it("marks complete search tokens longest-first without marking token prefixes", () => {
+    const markup = renderPreview("smokeless smoke Smoke2", ["smoke", "smokeless"]);
+
+    expect(markup).toContain("<mark>smokeless</mark> <mark>smoke</mark> Smoke2");
+    expect(markup).not.toContain("<mark>smoke</mark>less");
+  });
+
   it("omits raw HTML and leaves unsafe or unsupported preview structures inactive", () => {
     const markup = renderPreview("<script>window.__xss = true</script>\n\n[Unsafe](javascript:alert(1))\n\n# Heading\n\n- List item\n\n> Quote");
 
