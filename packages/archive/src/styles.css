@@ -204,16 +204,55 @@ button { cursor: pointer; }
 
 .entry-content li { color: var(--text); font-size: 15px; line-height: 1.5; }
 .entry-content li::before { content: "-"; margin-right: 9px; color: var(--muted); }
-.more { margin-top: 15px; color: var(--accent); }
+.context-section + .context-section { margin-top: 16px; }
+
+.context-heading {
+  margin: 0 0 8px;
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.075em;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+}
+
+.preview-change,
+.preview-prose {
+  max-width: 640px;
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.context-section > p + p { margin-top: 8px; }
+.preview-change::before { content: "-"; margin-right: 9px; color: var(--muted); }
+
+.context-section mark {
+  padding: 0 2px;
+  background: rgb(229 162 60 / 22%);
+  color: var(--text);
+}
+
+.more { min-height: 44px; margin-top: 7px; color: var(--accent); }
+
+.filter-options button,
+.clear-filters {
+  min-height: 44px;
+}
 
 .state { margin: 50px 0; color: var(--secondary); }
 .error { color: var(--accent); }
+.state h2 { margin: 0 0 8px; color: var(--text); font-size: 20px; font-weight: 650; line-height: 1.2; }
+.state p { max-width: 640px; margin: 0; line-height: 1.5; }
 
 .note-page article { max-width: 760px; padding: clamp(64px, 10vw, 118px) 0; }
 .note-page article > h1 { margin: 14px 0 24px; font-size: clamp(48px, 7vw, 82px); letter-spacing: -0.055em; line-height: 0.92; }
 .source-link { color: var(--accent); text-decoration: none; }
 .source-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.note-body { margin-top: 40px; }
+.note-body { max-width: 640px; margin-top: 40px; overflow-wrap: anywhere; }
 .note-body h1 { margin: 44px 0 14px; font-size: clamp(30px, 5vw, 42px); letter-spacing: -0.03em; line-height: 1; }
 .note-body h2 { margin: 34px 0 12px; font-size: 32px; letter-spacing: -0.025em; }
 .note-body h3 { margin: 24px 0 10px; color: var(--text); font-size: 23px; }
