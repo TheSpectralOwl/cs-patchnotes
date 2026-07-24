@@ -125,6 +125,20 @@ describe("bounded note body cache", () => {
     await expect(cache.ensure("one", "expected-body")).resolves.toEqual({ body: "Current body" });
   });
 
+  it("rejects an active request when its version is evicted", async () => {
+    const request = deferred<{ body: string }>();
+    const cache = new NoteBodyCache((_id, _version, signal) => {
+      signal.addEventListener("abort", () => request.reject(new DOMException("Aborted", "AbortError")));
+      return request.promise;
+    });
+    const evicted = cache.ensure("one", "old-body");
+
+    cache.retain([{ id: "one", version: "new-body" }]);
+
+    await expect(evicted).rejects.toMatchObject({ name: "AbortError" });
+    expect(cache.record("one", "old-body")).toBeUndefined();
+  });
+
   it("only replaces a failed body request after an explicit retry", async () => {
     const first = deferred<{ body: string }>();
     const second = deferred<{ body: string }>();
