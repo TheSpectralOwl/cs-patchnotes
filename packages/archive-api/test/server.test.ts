@@ -51,7 +51,7 @@ describe("archive API", () => {
       filename: "2024-01-01-context.md",
       steamGid: "1",
       sourceHash: "context-source",
-      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Before smoke adjustment.\n- Updated smoke behavior.\n- After smoke adjustment.\n\n## Maps\n\n- Smoke now covers the new route.\n",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Before the adjustment.\n- Updated smoke behavior.\n- After the adjustment.\n\n## Maps\n\n- Smoke now covers the new route.\n",
     }]), reloadToken: "secret" });
     apps.push(app);
     const response = await app.inject("/api/search?q=smoke&game=cs2");
@@ -61,9 +61,9 @@ describe("archive API", () => {
         {
           heading: "Gameplay",
           items: [
-            { markdown: "Before smoke adjustment.", kind: "change", matched: false },
+            { markdown: "Before the adjustment.", kind: "change", matched: false },
             { markdown: "Updated smoke behavior.", kind: "change", matched: true },
-            { markdown: "After smoke adjustment.", kind: "change", matched: false },
+            { markdown: "After the adjustment.", kind: "change", matched: false },
           ],
         },
         {
@@ -103,6 +103,23 @@ describe("archive API", () => {
     expect(prose.json().hits[0].sections[0].items[0]).toEqual({
       markdown: "Recoil recovery is now more predictable.", kind: "prose", matched: true,
     });
+  });
+
+  it("de-duplicates overlapping sibling context in source order", async () => {
+    const app = buildServer({ contentDir: contentFixture([{
+      filename: "2024-01-01-overlap.md",
+      steamGid: "1",
+      sourceHash: "overlap-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- First smoke change.\n- Second smoke change.\n- Third smoke change.\n",
+    }]), reloadToken: "secret" });
+    apps.push(app);
+
+    const response = await app.inject("/api/search?q=smoke");
+    expect(response.json().hits[0].sections[0].items).toEqual([
+      { markdown: "First smoke change.", kind: "change", matched: true },
+      { markdown: "Second smoke change.", kind: "change", matched: true },
+      { markdown: "Third smoke change.", kind: "change", matched: true },
+    ]);
   });
 
   it("uses the earliest headed source preview for title-only hits and unfiltered browse", async () => {

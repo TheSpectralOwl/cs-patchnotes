@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { remark } from "remark";
 
 export type Game = "csgo" | "cs2";
 
@@ -16,15 +17,44 @@ export type Note = {
   duplicate_of?: string;
 };
 
+export type PreviewItem = {
+  markdown: string;
+  kind: "change" | "prose" | "heading";
+  matched: boolean;
+};
+
+export type PreviewSection = {
+  heading: string;
+  items: PreviewItem[];
+};
+
 export type SearchHit = Pick<Note, "id" | "title" | "date" | "game" | "steam_gid" | "source_url"> & {
   score: number;
-  matching_lines: string[];
-  more_changes: number;
+  sections: PreviewSection[];
 };
+
+type PositionedNode = {
+  type: string;
+  position?: { start: { offset?: number }; end: { offset?: number } };
+  children?: PositionedNode[];
+};
+
+type ContextItem = Omit<PreviewItem, "matched"> & {
+  order: number;
+  siblings?: ContextItem[];
+};
+
+type ContextSection = {
+  heading: string;
+  items: ContextItem[];
+};
+
+export const MAX_PARSER_INPUT_BYTES = 1024 * 1024;
 
 export type CorpusIndex = {
   notes: Note[];
   terms: Map<string, Array<[number, number]>>;
+  contexts: ContextSection[][];
 };
 
 function parseFrontmatter(contents: string) {
@@ -70,6 +100,78 @@ function tokens(value: string) {
   return value.toLowerCase().match(/[a-z0-9]+/g) ?? [];
 }
 
+function sourceSlice(body: string, node: PositionedNode) {
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (start === undefined || end === undefined) throw new Error("Markdown parser returned a node without source positions");
+  return body.slice(start, end);
+}
+
+function inlineSourceSlice(body: string, node: PositionedNode) {
+  const children = node.children ?? [];
+  if (children.length === 0) return sourceSlice(body, node);
+  const first = children[0];
+  const last = children[children.length - 1];
+  const start = first.position?.start.offset;
+  const end = last.position?.end.offset;
+  if (start === undefined || end === undefined) throw new Error("Markdown parser returned inline content without source positions");
+  return body.slice(start, end);
+}
+
+function contextualSections(body: string): ContextSection[] {
+  if (Buffer.byteLength(body, "utf8") > MAX_PARSER_INPUT_BYTES) {
+    throw new Error(`Note body exceeds the 1 MiB parser input ceiling (${MAX_PARSER_INPUT_BYTES} bytes)`);
+  }
+
+  const tree = remark().parse(body) as unknown as PositionedNode;
+  const sections: ContextSection[] = [];
+  let current: ContextSection | undefined;
+
+  const requireSection = () => {
+    if (!current) throw new Error("Searchable Markdown content must have a preceding authored heading");
+    return current;
+  };
+
+  const addItem = (section: ContextSection, node: PositionedNode, kind: PreviewItem["kind"], siblings?: ContextItem[]) => {
+    const markdown = inlineSourceSlice(body, node);
+    const order = node.position?.start.offset;
+    if (order === undefined) throw new Error("Markdown parser returned a node without source positions");
+    const item: ContextItem = { markdown, kind, order, siblings };
+    section.items.push(item);
+    return item;
+  };
+
+  const walkList = (list: PositionedNode) => {
+    const section = requireSection();
+    const siblings: ContextItem[] = [];
+    const nestedLists: PositionedNode[] = [];
+
+    for (const listItem of list.children ?? []) {
+      if (listItem.type !== "listItem") continue;
+      const paragraph = listItem.children?.find((child) => child.type === "paragraph");
+      if (paragraph) siblings.push(addItem(section, paragraph, "change", siblings));
+      nestedLists.push(...(listItem.children ?? []).filter((child) => child.type === "list"));
+    }
+
+    for (const nestedList of nestedLists) walkList(nestedList);
+  };
+
+  for (const node of tree.children ?? []) {
+    if (node.type === "heading") {
+      const heading = inlineSourceSlice(body, node);
+      current = { heading, items: [] };
+      sections.push(current);
+      addItem(current, node, "heading");
+    } else if (node.type === "paragraph") {
+      addItem(requireSection(), node, "prose");
+    } else if (node.type === "list") {
+      walkList(node);
+    }
+  }
+
+  return sections;
+}
+
 function compareDecimalIdentifiers(left: string, right: string) {
   const normalizedLeft = left.replace(/^0+(?=\d)/, "");
   const normalizedRight = right.replace(/^0+(?=\d)/, "");
@@ -108,20 +210,58 @@ export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(proce
   }
 
   const terms = new Map<string, Array<[number, number]>>();
+  const contexts = notes.map((note) => contextualSections(note.body));
   notes.forEach((note, noteIndex) => {
     const frequencies = new Map<string, number>();
     for (const token of tokens(`${note.title}\n${note.body}`)) frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
     for (const [token, count] of frequencies) terms.set(token, [...(terms.get(token) ?? []), [noteIndex, count]]);
   });
-  return { notes, terms };
+  return { notes, terms, contexts };
 }
 
-function matchingLines(note: Note, queryTokens: string[]) {
-  if (queryTokens.length === 0) return note.body.split("\n").filter((line) => line.startsWith("- ")).slice(0, 3);
-  return note.body.split("\n").filter((line) => {
-    const candidate = line.toLowerCase();
-    return queryTokens.some((token) => candidate.includes(token));
+function matchesTokens(markdown: string, queryTokens: string[]) {
+  const fragmentTokens = new Set(tokens(markdown));
+  return queryTokens.some((token) => fragmentTokens.has(token));
+}
+
+function nearestChange(items: ContextItem[], matched: ContextItem) {
+  return items
+    .filter((item) => item.kind === "change")
+    .sort((left, right) => Math.abs(left.order - matched.order) - Math.abs(right.order - matched.order))[0];
+}
+
+function projectSections(sections: ContextSection[], queryTokens: string[]): PreviewSection[] {
+  const matchedSections = sections.flatMap((section) => {
+    const matched = queryTokens.length === 0 ? [] : section.items.filter((item) => matchesTokens(item.markdown, queryTokens));
+    if (matched.length === 0) return [];
+
+    const selected = new Set<ContextItem>();
+    for (const item of matched) {
+      selected.add(item);
+      if (item.kind === "change") {
+        const siblings = item.siblings ?? [];
+        const index = siblings.indexOf(item);
+        if (index > 0) selected.add(siblings[index - 1]);
+        if (index >= 0 && index < siblings.length - 1) selected.add(siblings[index + 1]);
+      } else {
+        const change = nearestChange(section.items, item);
+        if (change) selected.add(change);
+      }
+    }
+
+    return [{
+      heading: section.heading,
+      items: [...selected]
+        .sort((left, right) => left.order - right.order)
+        .map((item) => ({ markdown: item.markdown, kind: item.kind, matched: matched.includes(item) })),
+    }];
   });
+
+  if (matchedSections.length > 0) return matchedSections;
+  const fallback = sections.find((section) => section.items.length > 0);
+  if (!fallback) return [];
+  const item = fallback.items[0];
+  return [{ heading: fallback.heading, items: [{ markdown: item.markdown, kind: item.kind, matched: false }] }];
 }
 
 export function searchCorpus(index: CorpusIndex, query: string, filters: { game?: Game; from?: string; to?: string } = {}): SearchHit[] {
@@ -132,16 +272,13 @@ export function searchCorpus(index: CorpusIndex, query: string, filters: { game?
     for (const [noteIndex, count] of index.terms.get(token) ?? []) scores.set(noteIndex, (scores.get(noteIndex) ?? 0) + count);
   }
   return [...scores]
-    .map(([noteIndex, score]) => ({ note: index.notes[noteIndex], score }))
+    .map(([noteIndex, score]) => ({ note: index.notes[noteIndex], context: index.contexts[noteIndex], score }))
     .filter(({ note }) => !note.duplicate_of)
     .filter(({ note }) => !filters.game || note.game === filters.game)
     .filter(({ note }) => !filters.from || note.date >= filters.from)
     .filter(({ note }) => !filters.to || note.date <= filters.to)
     .sort((left, right) => right.score - left.score || right.note.date.localeCompare(left.note.date))
-    .map(({ note, score }) => {
-      const lines = matchingLines(note, queryTokens);
-      const changes = note.body.split("\n").filter((line) => /^\s*-\s+/.test(line));
-      return {
+    .map(({ note, context, score }) => ({
         id: note.id,
         title: note.title,
         date: note.date,
@@ -149,10 +286,8 @@ export function searchCorpus(index: CorpusIndex, query: string, filters: { game?
         steam_gid: note.steam_gid,
         source_url: note.source_url,
         score,
-        matching_lines: lines,
-        more_changes: Math.max(0, changes.length - lines.length),
-      };
-    });
+        sections: projectSections(context, queryTokens),
+      }));
 }
 
 export class CorpusStore {
