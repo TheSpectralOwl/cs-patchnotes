@@ -127,11 +127,9 @@ function contextualSections(body: string): ContextSection[] {
 
   const tree = remark().parse(body) as unknown as PositionedNode;
   const sections: ContextSection[] = [];
-  let current: ContextSection | undefined;
-
-  const requireSection = () => {
-    if (!current) throw new Error("Searchable Markdown content must have a preceding authored heading");
-    return current;
+  const requireSection = (section: ContextSection | undefined) => {
+    if (!section) throw new Error("Searchable Markdown content must have a preceding authored heading");
+    return section;
   };
 
   const addItem = (section: ContextSection, node: PositionedNode, kind: PreviewItem["kind"]) => {
@@ -143,20 +141,26 @@ function contextualSections(body: string): ContextSection[] {
     return item;
   };
 
-  const walkSupportedBlocks = (nodes: PositionedNode[]) => {
+  const walkSupportedBlocks = (nodes: PositionedNode[], initialSection: ContextSection | undefined) => {
+    let current = initialSection;
     for (const node of nodes) {
-      if (node.type === "paragraph") {
-        addItem(requireSection(), node, "prose");
+      if (node.type === "heading") {
+        current = { heading: inlineSourceSlice(body, node), items: [] };
+        sections.push(current);
+        addItem(current, node, "heading");
+      } else if (node.type === "paragraph") {
+        addItem(requireSection(current), node, "prose");
       } else if (node.type === "list") {
-        walkList(node);
+        walkList(node, current);
       } else if (node.type === "blockquote") {
-        walkSupportedBlocks(node.children ?? []);
+        walkSupportedBlocks(node.children ?? [], current);
       }
     }
+    return current;
   };
 
-  const walkList = (list: PositionedNode) => {
-    const section = requireSection();
+  const walkList = (list: PositionedNode, current: ContextSection | undefined) => {
+    const section = requireSection(current);
     const siblingGroups: ContextItem[][] = [];
     const nestedBlocks: PositionedNode[] = [];
 
@@ -176,19 +180,10 @@ function contextualSections(body: string): ContextSection[] {
       });
     });
 
-    walkSupportedBlocks(nestedBlocks);
+    walkSupportedBlocks(nestedBlocks, section);
   };
 
-  for (const node of tree.children ?? []) {
-    if (node.type === "heading") {
-      const heading = inlineSourceSlice(body, node);
-      current = { heading, items: [] };
-      sections.push(current);
-      addItem(current, node, "heading");
-    } else {
-      walkSupportedBlocks([node]);
-    }
-  }
+  walkSupportedBlocks(tree.children ?? [], undefined);
 
   return sections;
 }

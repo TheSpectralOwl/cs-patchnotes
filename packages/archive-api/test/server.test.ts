@@ -162,6 +162,52 @@ describe("archive API", () => {
     }]);
   });
 
+  it("uses nested block and list headings as local source context", async () => {
+    const app = buildServer({ contentDir: contentFixture([{
+      filename: "2024-01-01-nested-headings.md",
+      steamGid: "1",
+      sourceHash: "nested-headings-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n> ### Networking\n>\n> Quoted packet synchronization changed.\n\n- Outer list context.\n  - ### Matchmaking\n    - Nested queue assignment changed.\n- Outer smoke behavior remains.\n",
+    }]), reloadToken: "secret" });
+    apps.push(app);
+
+    const blockquoteHeading = await app.inject("/api/search?q=networking");
+    expect(blockquoteHeading.json().hits[0].sections).toEqual([{
+      heading: "Networking",
+      items: [{ markdown: "Networking", kind: "heading", matched: true }],
+    }]);
+
+    const blockquoteProse = await app.inject("/api/search?q=synchronization");
+    expect(blockquoteProse.json().hits[0].sections).toEqual([{
+      heading: "Networking",
+      items: [{ markdown: "Quoted packet synchronization changed.", kind: "prose", matched: true }],
+    }]);
+
+    const nestedListHeading = await app.inject("/api/search?q=matchmaking");
+    expect(nestedListHeading.json().hits[0].sections).toEqual([{
+      heading: "Matchmaking",
+      items: [
+        { markdown: "Matchmaking", kind: "heading", matched: true },
+        { markdown: "Nested queue assignment changed.", kind: "change", matched: false },
+      ],
+    }]);
+
+    const nestedListProse = await app.inject("/api/search?q=assignment");
+    expect(nestedListProse.json().hits[0].sections).toEqual([{
+      heading: "Matchmaking",
+      items: [{ markdown: "Nested queue assignment changed.", kind: "change", matched: true }],
+    }]);
+
+    const outerProse = await app.inject("/api/search?q=smoke");
+    expect(outerProse.json().hits[0].sections).toEqual([{
+      heading: "Gameplay",
+      items: [
+        { markdown: "Outer list context.", kind: "change", matched: false },
+        { markdown: "Outer smoke behavior remains.", kind: "change", matched: true },
+      ],
+    }]);
+  });
+
   it("uses the earliest headed source preview for title-only hits and unfiltered browse", async () => {
     const app = buildServer({ contentDir: contentFixture([
       {
