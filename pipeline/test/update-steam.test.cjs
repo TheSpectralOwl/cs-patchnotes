@@ -74,6 +74,15 @@ test("reports additions without writing during a dry run", async () => {
   assert.equal(fs.existsSync(path.join(contentDir, "raw")), false);
 });
 
+test("rejects unsafe and duplicate Steam GIDs before accessing the raw store", async () => {
+  const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-invalid-gid-"));
+  for (const gid of ["../outside", "1/2"]) {
+    await assert.rejects(updateSteam(contentDir, { fetchNews: async () => [{ ...steamItem(), gid }] }), /Steam feed GID must contain only decimal digits/);
+  }
+  await assert.rejects(updateSteam(contentDir, { fetchNews: async () => [steamItem(), steamItem()] }), /Steam feed contains duplicate GID: 1/);
+  assert.equal(fs.existsSync(path.join(contentDir, "raw")), false);
+});
+
 test("rejects a structured blocking audit finding with actionable record details", async () => {
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-audit-blocking-"));
   const before = sourceSnapshot(contentDir);

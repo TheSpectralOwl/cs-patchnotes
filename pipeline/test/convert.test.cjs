@@ -94,3 +94,10 @@ test("records hashes for the exact Markdown body bytes", () => {
   const parsed = parseNote(rendered);
   assert.equal(parsed.frontmatter.generated_sha256, sha256(parsed.body));
 });
+
+test("rejects raw GIDs that could escape the overrides directory", () => {
+  const raw = { ...fixture("2024"), gid: "../outside" };
+  const contentDir = tempCorpus({ ...raw, gid: "2024" });
+  fs.writeFileSync(path.join(contentDir, "raw", "steam", "2024.json"), `${JSON.stringify(raw)}\n`);
+  assert.throws(() => convertAll(contentDir), /Raw Steam GID in .*must contain only decimal digits/);
+});

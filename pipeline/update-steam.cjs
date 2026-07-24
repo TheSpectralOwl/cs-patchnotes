@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { auditCorpus, blockingFindings } = require("./audit.cjs");
-const { assertNoSymlinks } = require("./corpus.cjs");
+const { assertNoSymlinks, assertSteamGid } = require("./corpus.cjs");
 const { convertAll } = require("./convert.cjs");
 const { fetchAllNews, isPatchNote, toRawRecord } = require("../tools/seed-raw-from-steam.cjs");
 
@@ -33,7 +33,14 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   assertNoSymlinks(contentDir);
   const fetched = await fetchNews();
   const items = fetched instanceof Map ? [...fetched.values()] : fetched;
-  const accepted = items.filter(isPatchNote).sort((left, right) => left.gid.localeCompare(right.gid));
+  const accepted = items.filter(isPatchNote);
+  const seenGids = new Set();
+  for (const item of accepted) {
+    assertSteamGid(item.gid, "Steam feed GID");
+    if (seenGids.has(item.gid)) throw new Error(`Steam feed contains duplicate GID: ${item.gid}`);
+    seenGids.add(item.gid);
+  }
+  accepted.sort((left, right) => left.gid.localeCompare(right.gid));
   const planned = [];
   const summary = { fetched: items.length, accepted: accepted.length, existing: 0, added: 0, conflicts: [], dry_run: dryRun };
 
@@ -44,7 +51,7 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
       if (fs.readFileSync(filename, "utf8") !== contents) summary.conflicts.push(filename);
       else summary.existing++;
     } else {
-      planned.push({ filename, contents });
+      planned.push({ gid: item.gid, contents });
     }
   }
 
@@ -59,7 +66,7 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
     const stagedRawDir = path.join(stagedContentDir, "raw", "steam");
     fs.mkdirSync(stagedRawDir, { recursive: true });
     for (const entry of planned) {
-      fs.writeFileSync(path.join(stagedRawDir, path.basename(entry.filename)), entry.contents);
+      fs.writeFileSync(path.join(stagedRawDir, `${entry.gid}.json`), entry.contents);
     }
 
     summary.conversion = convert(stagedContentDir);

@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { assertSteamGid, resolveContainedPath } = require("./corpus.cjs");
 
 const CONVERTER_VERSION = 6;
 const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
@@ -172,7 +173,11 @@ function loadRawRecords(contentDir) {
     .readdirSync(rawDir)
     .filter((filename) => filename.endsWith(".json"))
     .sort()
-    .map((filename) => JSON.parse(fs.readFileSync(path.join(rawDir, filename), "utf8")));
+    .map((filename) => {
+      const raw = JSON.parse(fs.readFileSync(path.join(rawDir, filename), "utf8"));
+      assertSteamGid(raw.gid, `Raw Steam GID in ${filename}`);
+      return raw;
+    });
 }
 
 function writeIfChanged(filename, contents) {
@@ -200,7 +205,7 @@ function convertAll(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR)
     const filename = noteFilename(raw, filenameCounts.get(noteFilename(raw)) > 1);
 
     const target = path.join(notesDir, filename);
-    const override = path.join(overridesDir, `${raw.gid}.md`);
+    const override = resolveContainedPath(overridesDir, `${raw.gid}.md`);
     if (fs.existsSync(override)) {
       if (writeIfChanged(target, fs.readFileSync(override, "utf8"))) {
         summary.overridden++;
