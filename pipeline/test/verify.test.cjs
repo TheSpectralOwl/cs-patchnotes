@@ -75,7 +75,8 @@ test("verifies a complete corpus without modifying source evidence", () => {
   assert.deepEqual(sourceSnapshot(contentDir), before);
 });
 
-test("rejects a notes-directory symlink before copying or converting", () => {
+test("rejects a notes-directory symlink before copying or converting", (t) => {
+  if (process.platform !== "linux") return t.skip("symlink security regression requires Linux Node");
   const contentDir = createCorpus();
   const notesDir = path.join(contentDir, "content", "notes");
   const externalNotesDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-verify-external-notes-"));
@@ -90,7 +91,8 @@ test("rejects a notes-directory symlink before copying or converting", () => {
   assert.deepEqual(sourceSnapshot(externalNotesDir), externalBefore);
 });
 
-test("rejects a raw-store symlink before copying or converting", () => {
+test("rejects a raw-store symlink before copying or converting", (t) => {
+  if (process.platform !== "linux") return t.skip("symlink security regression requires Linux Node");
   const contentDir = createCorpus();
   const rawDir = path.join(contentDir, "raw", "steam");
   const externalRawDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-verify-external-raw-"));

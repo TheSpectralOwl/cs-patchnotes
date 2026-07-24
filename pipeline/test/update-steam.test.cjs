@@ -139,7 +139,8 @@ test("leaves the source corpus byte-identical when staged conversion conflicts",
   assert.deepEqual(sourceSnapshot(contentDir), before);
 });
 
-test("rejects symlinked corpora before staging or conversion", async () => {
+test("rejects symlinked corpora before staging or conversion", async (t) => {
+  if (process.platform !== "linux") return t.skip("symlink security regression requires Linux Node");
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-symlink-"));
   const externalNotesDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-external-notes-"));
   fs.mkdirSync(path.join(contentDir, "content"), { recursive: true });
