@@ -70,6 +70,19 @@ test("rejects a structured blocking audit finding with actionable record details
   );
 });
 
+test("fails closed for injected audit reports without a valid findings array", async () => {
+  for (const report of [{}, { findings: null }, { findings: "invalid" }]) {
+    const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-invalid-audit-"));
+    await assert.rejects(
+      updateSteam(contentDir, {
+        fetchNews: async () => new Map([["1", steamItem()]]),
+        audit: () => report,
+      }),
+      /Audit report is missing a valid findings array/,
+    );
+  }
+});
+
 test("keeps informational duplicate evidence from rejecting an update", async () => {
   const contentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-audit-informational-"));
   const report = auditReport([], {

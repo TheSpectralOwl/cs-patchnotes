@@ -94,6 +94,18 @@ test("rejects every structured blocking audit record without modifying source ev
   }
 });
 
+test("fails closed for injected audit reports without a valid findings array", () => {
+  for (const report of [{}, { findings: null }, { findings: "invalid" }]) {
+    const contentDir = createCorpus();
+    const before = sourceSnapshot(contentDir);
+    assert.throws(
+      () => verifyCorpus(contentDir, { audit: () => report }),
+      /Audit report is missing a valid findings array/,
+    );
+    assert.deepEqual(sourceSnapshot(contentDir), before);
+  }
+});
+
 test("keeps informational duplicate evidence eligible and exposes deterministic actionable CLI details", () => {
   const contentDir = createCorpus();
   const result = verifyCorpus(contentDir, {

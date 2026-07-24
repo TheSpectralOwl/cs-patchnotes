@@ -139,7 +139,22 @@ function informationalTitleCollisions(rawRecords) {
 }
 
 function blockingFindings(report) {
-  return report.findings || [];
+  if (!report || !Array.isArray(report.findings)) {
+    throw new Error("Audit report is missing a valid findings array");
+  }
+  for (const [index, finding] of report.findings.entries()) {
+    if (
+      !finding
+      || !isNonEmptyString(finding.class)
+      || !isNonEmptyString(finding.reason)
+      || !isNonEmptyString(finding.remediation)
+      || (finding.filename !== undefined && typeof finding.filename !== "string")
+      || (finding.steam_gid !== undefined && typeof finding.steam_gid !== "string")
+    ) {
+      throw new Error(`Audit report contains an invalid finding record at index ${index}`);
+    }
+  }
+  return report.findings;
 }
 
 function auditCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR) {

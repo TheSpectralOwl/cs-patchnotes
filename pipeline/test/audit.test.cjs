@@ -61,6 +61,16 @@ test("a valid loader-compatible corpus has no blocking findings", () => {
   assert.deepEqual(blockingFindings(report), []);
 });
 
+test("fails closed when an audit report lacks a valid finding array or record", () => {
+  for (const report of [{}, { findings: null }, { findings: "invalid" }]) {
+    assert.throws(() => blockingFindings(report), /missing a valid findings array/);
+  }
+  assert.throws(
+    () => blockingFindings({ findings: [{ class: "invalid_frontmatter" }] }),
+    /invalid finding record at index 0/,
+  );
+});
+
 test("rejects every archive-loader-required frontmatter field", () => {
   for (const field of ["title", "date", "game", "steam_gid", "source_url", "source_sha256", "generated_sha256"]) {
     const { contentDir } = validCorpus();
