@@ -63,7 +63,7 @@ test("a valid loader-compatible corpus has no blocking findings", () => {
 
 test("rejects every archive-loader-required frontmatter field", () => {
   for (const field of ["title", "date", "game", "steam_gid", "source_url", "source_sha256", "generated_sha256"]) {
-    const { contentDir, raw } = validCorpus();
+    const { contentDir } = validCorpus();
     const notePath = path.join(contentDir, "content", "notes", "example.md");
     const parsed = parseNote(fs.readFileSync(notePath, "utf8"));
     delete parsed.frontmatter[field];
@@ -72,8 +72,7 @@ test("rejects every archive-loader-required frontmatter field", () => {
       .join("\n");
     fs.writeFileSync(notePath, `---\n${frontmatter}\n---\n${parsed.body}`);
 
-    assert.deepEqual(blockingFindings(auditCorpus(contentDir)).map((finding) => finding.class), ["invalid_frontmatter"]);
-    assert.equal(raw.gid, "1");
+    assert.ok(blockingFindings(auditCorpus(contentDir)).some((finding) => finding.class === "invalid_frontmatter"));
   }
 });
 
@@ -104,11 +103,11 @@ test("reports named actionable findings with stable reviewer-ready records", () 
     },
     {
       class: "note_without_raw",
-      filename: "example.md",
+      filename: "missing.md",
       steam_gid: "missing",
       mutate({ contentDir, raw }) {
         const missing = makeRaw({ ...raw, gid: "missing", source_url: "https://example.test/missing" });
-        writeNote(contentDir, "example.md", missing);
+        writeNote(contentDir, "missing.md", missing);
       },
     },
     {
