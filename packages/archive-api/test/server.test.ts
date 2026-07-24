@@ -201,6 +201,36 @@ describe("archive API", () => {
     expect((await app.inject({ method: "POST", url: "/internal/reload", headers: { authorization: "Bearer secret" } })).statusCode).toBe(200);
   });
 
+  it("rejects a body fetch whose search-result digest became stale after a reload", async () => {
+    const contentDir = contentFixture([{
+      filename: "2024-01-01-versioned.md",
+      steamGid: "1",
+      sourceHash: "versioned-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Original smoke behavior.\n",
+    }]);
+    const app = buildServer({ contentDir, reloadToken: "secret" });
+    apps.push(app);
+
+    const staleHit = (await app.inject("/api/search?q=smoke")).json().hits[0];
+    const newBody = "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Replacement smoke behavior.\n";
+    writeNote(contentDir, {
+      filename: "2024-01-01-versioned.md",
+      steamGid: "1",
+      sourceHash: "versioned-source",
+      body: newBody,
+    });
+    expect((await app.inject({ method: "POST", url: "/internal/reload", headers: { authorization: "Bearer secret" } })).statusCode).toBe(200);
+
+    const staleBody = await app.inject(`/api/notes/${staleHit.id}?body_sha256=${staleHit.body_sha256}`);
+    expect(staleBody.statusCode).toBe(409);
+    expect(staleBody.json()).toEqual({ error: "Note body changed; refresh search results" });
+
+    const currentHit = (await app.inject("/api/search?q=smoke")).json().hits[0];
+    const currentBody = await app.inject(`/api/notes/${currentHit.id}?body_sha256=${currentHit.body_sha256}`);
+    expect(currentBody.statusCode).toBe(200);
+    expect(currentBody.json()).toMatchObject({ body: newBody });
+  });
+
   it("rejects an unsupported game value in frontmatter at runtime", () => {
     expect(() => buildServer({
       contentDir: contentFixture([{
