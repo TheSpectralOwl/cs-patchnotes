@@ -4,11 +4,16 @@ import {
   bodyForRender,
   NoteMarkdown,
   OriginalSourceAction,
+  PreviewMarkdown,
   safeWebHref,
 } from "./note-markdown";
 
 function renderNote(body: string, title = "Counter-Strike Update") {
   return renderToStaticMarkup(<NoteMarkdown body={body} title={title} />);
+}
+
+function renderPreview(markdown: string, queryTokens: string[] = []) {
+  return renderToStaticMarkup(<PreviewMarkdown markdown={markdown} queryTokens={queryTokens} />);
 }
 
 describe("NoteMarkdown", () => {
@@ -141,5 +146,42 @@ describe("OriginalSourceAction", () => {
     expect(markup).not.toContain("<a");
     expect(markup).not.toContain("href=");
     expect(markup).not.toContain("link-domain");
+  });
+});
+
+describe("PreviewMarkdown", () => {
+  it("keeps compact authored inline meaning and accepted outbound links", () => {
+    const markup = renderPreview("*Gameplay* **update**: [Read the Smoke notes](https://example.test/patch)", ["smoke"]);
+
+    expect(markup).toContain("<em>Gameplay</em>");
+    expect(markup).toContain("<strong>update</strong>");
+    expect(markup).toContain('href="https://example.test/patch"');
+    expect(markup).toContain('target="_blank"');
+    expect(markup).toContain('rel="noopener noreferrer"');
+    expect(markup).toContain('<mark>Smoke</mark>');
+    expect(markup).toContain('<sub class="link-domain">[example.test]</sub>');
+  });
+
+  it("layers literal case-insensitive marks inside authored emphasis, strong text, and links", () => {
+    const markup = renderPreview("*Smoke* **smoke** [SMOKE](https://example.test/destination)", ["smoke"]);
+
+    expect(markup).toContain("<em><mark>Smoke</mark></em>");
+    expect(markup).toContain("<strong><mark>smoke</mark></strong>");
+    expect(markup).toContain('<a class="note-link" href="https://example.test/destination" target="_blank" rel="noopener noreferrer"><mark>SMOKE</mark></a>');
+    expect(markup).not.toContain("https://example.test/destination<mark>");
+  });
+
+  it("omits raw HTML and leaves unsafe or unsupported preview structures inactive", () => {
+    const markup = renderPreview("<script>window.__xss = true</script>\n\n[Unsafe](javascript:alert(1))\n\n# Heading\n\n- List item\n\n> Quote");
+
+    expect(markup).toContain("Unsafe");
+    expect(markup).toContain("Heading");
+    expect(markup).toContain("List item");
+    expect(markup).toContain("Quote");
+    expect(markup).not.toContain("window.__xss");
+    expect(markup).not.toContain("<script>");
+    expect(markup).not.toContain("<a");
+    expect(markup).not.toContain("href=");
+    expect(markup).not.toMatch(/<(h[1-6]|ul|ol|li|blockquote)[ >]/);
   });
 });
