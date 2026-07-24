@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { describe, expect, it } from "vitest";
-import { TimelineEntry, timelineTransition } from "./index";
+import { contextualHits, TimelineEntry, timelineTransition } from "./index";
 import {
   type ArchiveSearch,
   NoteBodyCache,
@@ -25,6 +25,12 @@ function deferred<T>() {
 }
 
 describe("search state", () => {
+  it("rejects legacy API hits that lack contextual sections", () => {
+    expect(() => contextualHits({ hits: [{ id: "legacy", matching_lines: ["old preview"] }] })).toThrow(
+      "Search results require the updated archive API. Deploy the API, then retry.",
+    );
+  });
+
   it("retains the latest successful hits while an update is pending or unavailable", () => {
     const loaded = searchStateReducer<Hit>(
       searchStateReducer(createSearchState<Hit>(), { type: "success", requestId: 1, hits: [{ id: "first" }] }),

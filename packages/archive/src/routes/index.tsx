@@ -23,6 +23,19 @@ export type Hit = {
 };
 type Note = { body: string };
 
+export function contextualHits(response: unknown): Hit[] {
+  if (!response || typeof response !== "object" || !Array.isArray((response as { hits?: unknown }).hits)) {
+    throw new Error("Search is unavailable");
+  }
+
+  const hits = (response as { hits: unknown[] }).hits;
+  if (!hits.every((hit) => hit && typeof hit === "object" && Array.isArray((hit as { sections?: unknown }).sections))) {
+    throw new Error("Search results require the updated archive API. Deploy the API, then retry.");
+  }
+
+  return hits as Hit[];
+}
+
 export const Route = createFileRoute("/")({ validateSearch: validateArchiveSearch, component: Archive });
 
 function Archive() {
@@ -53,9 +66,10 @@ function Archive() {
     fetch(`/api/search?${archiveSearchParams({ q: deferredQuery, game, from, to })}`, { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error("Search is unavailable");
-        return response.json() as Promise<{ hits: Hit[] }>;
+        return response.json() as Promise<unknown>;
       })
-      .then(({ hits }) => {
+      .then((payload) => {
+        const hits = contextualHits(payload);
         if (controller.signal.aborted) return;
         cache.retain(hits.map((hit) => hit.id));
         cache.prefetch(hits.map((hit) => hit.id));
