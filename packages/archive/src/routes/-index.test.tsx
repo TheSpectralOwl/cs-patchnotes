@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { describe, expect, it } from "vitest";
-import { TimelineEntry, timelineTransition } from "./index";
+import { contextualHits, refreshAfterCacheRequest, TimelineEntry, timelineTransition } from "./index";
 import {
   type ArchiveSearch,
   NoteBodyCache,
@@ -25,6 +25,19 @@ function deferred<T>() {
 }
 
 describe("search state", () => {
+  it("rejects legacy API hits that lack contextual sections", () => {
+    expect(() => contextualHits({ hits: [{ id: "legacy", matching_lines: ["old preview"] }] })).toThrow(
+      "Search results require the updated archive API. Deploy the API, then retry.",
+    );
+  });
+
+  it("refreshes cache state while consuming failed expansion requests", async () => {
+    let refreshes = 0;
+
+    await expect(refreshAfterCacheRequest(Promise.reject(new Error("Unavailable")), () => { refreshes += 1; })).resolves.toBeUndefined();
+    expect(refreshes).toBe(1);
+  });
+
   it("retains the latest successful hits while an update is pending or unavailable", () => {
     const loaded = searchStateReducer<Hit>(
       searchStateReducer(createSearchState<Hit>(), { type: "success", requestId: 1, hits: [{ id: "first" }] }),
@@ -74,15 +87,56 @@ describe("bounded note body cache", () => {
       return request.promise;
     });
 
-    cache.prefetch(["one", "two", "three", "four", "obsolete"]);
+    cache.prefetch(["one", "two", "three", "four", "obsolete"].map((id) => ({ id })));
 
     expect([...requests]).toHaveLength(4);
     expect(cache.queuedIds()).toEqual(["obsolete"]);
 
-    cache.retain(["one", "two", "three", "four"]);
+    cache.retain(["one", "two", "three", "four"].map((id) => ({ id })));
 
     expect(cache.queuedIds()).toEqual([]);
     expect(cache.record("obsolete")).toBeUndefined();
+  });
+
+  it("does not reuse or restore an older body after a refreshed search result", async () => {
+    const stale = deferred<{ body: string }>();
+    const current = deferred<{ body: string }>();
+    const cache = new NoteBodyCache((_id, _version, signal) => {
+      signal.addEventListener("abort", () => stale.reject(new DOMException("Aborted", "AbortError")));
+      return cache.record("one", "old") ? stale.promise : current.promise;
+    });
+
+    cache.prefetch([{ id: "one", version: "old" }]);
+    cache.retain([{ id: "one", version: "new" }]);
+    const replacement = cache.ensure("one", "new");
+    current.resolve({ body: "New body" });
+
+    await expect(replacement).resolves.toEqual({ body: "New body" });
+    expect(cache.record("one", "old")).toBeUndefined();
+    expect(cache.record("one", "new")).toMatchObject({ status: "ready", value: { body: "New body" } });
+  });
+
+  it("binds each note request to the body digest from its search hit", async () => {
+    const cache = new NoteBodyCache(async (id, version) => {
+      expect({ id, version }).toEqual({ id: "one", version: "expected-body" });
+      return { body: "Current body" };
+    });
+
+    await expect(cache.ensure("one", "expected-body")).resolves.toEqual({ body: "Current body" });
+  });
+
+  it("rejects an active request when its version is evicted", async () => {
+    const request = deferred<{ body: string }>();
+    const cache = new NoteBodyCache((_id, _version, signal) => {
+      signal.addEventListener("abort", () => request.reject(new DOMException("Aborted", "AbortError")));
+      return request.promise;
+    });
+    const evicted = cache.ensure("one", "old-body");
+
+    cache.retain([{ id: "one", version: "new-body" }]);
+
+    await expect(evicted).rejects.toMatchObject({ name: "AbortError" });
+    expect(cache.record("one", "old-body")).toBeUndefined();
   });
 
   it("only replaces a failed body request after an explicit retry", async () => {
@@ -130,6 +184,7 @@ describe("contextual timeline entries", () => {
     date: "2024-01-01",
     game: "cs2" as const,
     source_url: "https://example.test/source",
+    body_sha256: "current-body",
     sections: [
       {
         heading: "*smoke* heading",
@@ -147,7 +202,7 @@ describe("contextual timeline entries", () => {
 
   it("renders every ordered contextual section with nested literal marks and safe note navigation", async () => {
     const cache = new NoteBodyCache(async () => ({ body: "# Smoke Update\n\nComplete *smoke* patch." }));
-    await cache.ensure(hit.id);
+    await cache.ensure(hit.id, hit.body_sha256);
 
     const rootRoute = createRootRoute();
     const noteRoute = createRoute({ getParentRoute: () => rootRoute, path: "notes/$id", component: () => null });
@@ -170,6 +225,9 @@ describe("contextual timeline entries", () => {
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain('aria-controls="patch-note-one"');
     expect(markup).toContain('id="patch-note-one"');
+    expect(markup).toMatch(/<h2 class="timeline-title"><a href="[^"]+" class="note-title">Smoke Update<\/a><\/h2>/);
+    expect(markup).toContain('<h3 class="context-heading"><em><mark>smoke</mark></em> heading</h3>');
+    expect(markup).toContain('<h3 class="context-heading">Second section</h3>');
     expect(markup).toContain('href="/notes/note-one?q=Smoke&amp;game=cs2&amp;from=2023-09-27&amp;to="');
     expect(markup).toContain("Complete <em>smoke</em> patch.");
   });

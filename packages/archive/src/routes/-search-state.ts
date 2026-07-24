@@ -72,6 +72,8 @@ export function searchStateReducer<T>(state: SearchState<T>, action: SearchState
 }
 
 export type NoteBodyRecord<T> = {
+  id: string;
+  version?: string;
   status: "pending" | "ready" | "error";
   promise: Promise<T>;
   controller?: AbortController;
@@ -84,6 +86,8 @@ type Deferred<T> = {
   resolve: (value: T) => void;
   reject: (reason?: unknown) => void;
 };
+
+type NoteBodyReference = string | { id: string; version?: string };
 
 const resolverByPromise = new WeakMap<Promise<unknown>, Deferred<unknown>>();
 
@@ -103,71 +107,89 @@ function deferredResolver<T>(promise: Promise<T>): Deferred<T> | undefined {
   return resolverByPromise.get(promise) as Deferred<T> | undefined;
 }
 
+function abortedRequest() {
+  return new DOMException("Aborted", "AbortError");
+}
+
 export class NoteBodyCache<T> {
   #records = new Map<string, NoteBodyRecord<T>>();
   #queue: string[] = [];
   #active = 0;
 
   constructor(
-    private readonly fetcher: (id: string, signal: AbortSignal) => Promise<T>,
+    private readonly fetcher: (id: string, version: string | undefined, signal: AbortSignal) => Promise<T>,
     private readonly maxActive = 4,
     private readonly onChange?: () => void,
   ) {}
 
-  ensure(id: string): Promise<T> {
-    const existing = this.#records.get(id);
+  #key(id: string, version?: string) {
+    return `${id}\u0000${version ?? ""}`;
+  }
+
+  ensure(id: string, version?: string): Promise<T> {
+    const key = this.#key(id, version);
+    const existing = this.#records.get(key);
     if (existing) return existing.promise;
 
     const next = deferred<T>();
-    this.#records.set(id, { status: "pending", promise: next.promise });
-    this.#queue.push(id);
+    this.#records.set(key, { id, version, status: "pending", promise: next.promise });
+    this.#queue.push(key);
     this.#startQueued();
     return next.promise;
   }
 
-  prefetch(ids: Iterable<string>) {
-    for (const id of new Set(ids)) void this.ensure(id).catch(() => undefined);
+  prefetch(notes: Iterable<NoteBodyReference>) {
+    for (const note of notes) {
+      const { id, version } = typeof note === "string" ? { id: note } : note;
+      void this.ensure(id, version).catch(() => undefined);
+    }
   }
 
-  retain(ids: Iterable<string>) {
-    const visible = new Set(ids);
-    this.#queue = this.#queue.filter((id) => {
-      if (visible.has(id)) return true;
-      this.#records.delete(id);
-      return false;
-    });
+  retain(notes: Iterable<NoteBodyReference>) {
+    const visible = new Set(Array.from(notes, (note) => {
+      const { id, version } = typeof note === "string" ? { id: note } : note;
+      return this.#key(id, version);
+    }));
+    this.#queue = this.#queue.filter((key) => visible.has(key));
+    for (const [key, record] of this.#records) {
+      if (visible.has(key)) continue;
+      record.controller?.abort();
+      if (record.status === "pending") deferredResolver(record.promise)?.reject(abortedRequest());
+      this.#records.delete(key);
+    }
     this.onChange?.();
   }
 
-  retry(id: string): Promise<T> {
-    const existing = this.#records.get(id);
-    if (!existing || existing.status !== "error") return this.ensure(id);
-    this.#records.delete(id);
-    return this.ensure(id);
+  retry(id: string, version?: string): Promise<T> {
+    const key = this.#key(id, version);
+    const existing = this.#records.get(key);
+    if (!existing || existing.status !== "error") return this.ensure(id, version);
+    this.#records.delete(key);
+    return this.ensure(id, version);
   }
 
-  record(id: string) {
-    return this.#records.get(id);
+  record(id: string, version?: string) {
+    return this.#records.get(this.#key(id, version));
   }
 
   queuedIds() {
-    return [...this.#queue];
+    return this.#queue.map((key) => this.#records.get(key)?.id ?? key);
   }
 
   #startQueued() {
     while (this.#active < this.maxActive && this.#queue.length > 0) {
-      const id = this.#queue.shift();
-      if (!id) continue;
-      const record = this.#records.get(id);
+      const key = this.#queue.shift();
+      if (!key) continue;
+      const record = this.#records.get(key);
       if (!record || record.controller) continue;
 
       const controller = new AbortController();
       record.controller = controller;
       this.#active += 1;
       this.onChange?.();
-      void this.fetcher(id, controller.signal).then(
+      void this.fetcher(record.id, record.version, controller.signal).then(
         (value) => {
-          if (this.#records.get(id) !== record) return;
+          if (this.#records.get(key) !== record) return;
           record.status = "ready";
           record.value = value;
           record.controller = undefined;
@@ -175,7 +197,7 @@ export class NoteBodyCache<T> {
           this.onChange?.();
         },
         (error: unknown) => {
-          if (this.#records.get(id) !== record) return;
+          if (this.#records.get(key) !== record) return;
           record.status = "error";
           record.error = error;
           record.controller = undefined;

@@ -73,6 +73,7 @@ describe("archive API", () => {
       ],
     });
     expect(response.json().hits[0]).not.toHaveProperty("body");
+    expect(response.json().hits[0]).toHaveProperty("body_sha256", expect.any(String));
     expect(response.json().hits[0]).not.toHaveProperty("matching_lines");
     expect(response.json().hits[0]).not.toHaveProperty("more_changes");
   });
@@ -120,6 +121,113 @@ describe("archive API", () => {
       { markdown: "Second smoke change.", kind: "change", matched: true },
       { markdown: "Third smoke change.", kind: "change", matched: true },
     ]);
+  });
+
+  it("keeps continuation-paragraph matches with their list-item siblings", async () => {
+    const app = buildServer({ contentDir: contentFixture([{
+      filename: "2024-01-01-continuation.md",
+      steamGid: "1",
+      sourceHash: "continuation-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Before the adjustment.\n\n- Initial detail.\n\n  Continuation smoke detail.\n\n- After the adjustment.\n\n## Maps\n\n- Unrelated map update.\n",
+    }]), reloadToken: "secret" });
+    apps.push(app);
+
+    const response = await app.inject("/api/search?q=smoke");
+
+    expect(response.json().hits[0].sections).toEqual([{
+      heading: "Gameplay",
+      items: [
+        { markdown: "Before the adjustment.", kind: "change", matched: false },
+        { markdown: "Initial detail.", kind: "change", matched: false },
+        { markdown: "Continuation smoke detail.", kind: "change", matched: true },
+        { markdown: "After the adjustment.", kind: "change", matched: false },
+      ],
+    }]);
+  });
+
+  it("keeps blockquote prose under its authored heading instead of falling back to an unrelated section", async () => {
+    const app = buildServer({ contentDir: contentFixture([{
+      filename: "2024-01-01-blockquote.md",
+      steamGid: "1",
+      sourceHash: "blockquote-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n> Smoke behavior changed in this quoted source note.\n\n## Maps\n\n- Unrelated map update.\n",
+    }]), reloadToken: "secret" });
+    apps.push(app);
+
+    const response = await app.inject("/api/search?q=smoke");
+
+    expect(response.json().hits[0].sections).toEqual([{
+      heading: "Gameplay",
+      items: [{ markdown: "Smoke behavior changed in this quoted source note.", kind: "prose", matched: true }],
+    }]);
+  });
+
+  it("uses nested block and list headings as local source context", async () => {
+    const app = buildServer({ contentDir: contentFixture([{
+      filename: "2024-01-01-nested-headings.md",
+      steamGid: "1",
+      sourceHash: "nested-headings-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n> ### Networking\n>\n> Quoted packet synchronization changed.\n\n- Outer list context.\n  - ### Matchmaking\n    - Nested queue assignment changed.\n- Outer smoke behavior remains.\n",
+    }]), reloadToken: "secret" });
+    apps.push(app);
+
+    const blockquoteHeading = await app.inject("/api/search?q=networking");
+    expect(blockquoteHeading.json().hits[0].sections).toEqual([{
+      heading: "Networking",
+      items: [{ markdown: "Networking", kind: "heading", matched: true }],
+    }]);
+
+    const blockquoteProse = await app.inject("/api/search?q=synchronization");
+    expect(blockquoteProse.json().hits[0].sections).toEqual([{
+      heading: "Networking",
+      items: [{ markdown: "Quoted packet synchronization changed.", kind: "prose", matched: true }],
+    }]);
+
+    const nestedListHeading = await app.inject("/api/search?q=matchmaking");
+    expect(nestedListHeading.json().hits[0].sections).toEqual([{
+      heading: "Matchmaking",
+      items: [
+        { markdown: "Matchmaking", kind: "heading", matched: true },
+        { markdown: "Nested queue assignment changed.", kind: "change", matched: false },
+      ],
+    }]);
+
+    const nestedListProse = await app.inject("/api/search?q=assignment");
+    expect(nestedListProse.json().hits[0].sections).toEqual([{
+      heading: "Matchmaking",
+      items: [{ markdown: "Nested queue assignment changed.", kind: "change", matched: true }],
+    }]);
+
+    const outerProse = await app.inject("/api/search?q=smoke");
+    expect(outerProse.json().hits[0].sections).toEqual([{
+      heading: "Gameplay",
+      items: [
+        { markdown: "Outer list context.", kind: "change", matched: false },
+        { markdown: "Outer smoke behavior remains.", kind: "change", matched: true },
+      ],
+    }]);
+  });
+
+  it("keeps direct list-item prose under a local heading without changing outer siblings", async () => {
+    const app = buildServer({ contentDir: contentFixture([{
+      filename: "2024-01-01-direct-list-heading.md",
+      steamGid: "1",
+      sourceHash: "direct-list-heading-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- ### Networking\n\n  Packet synchronization changed.\n- Outer smoke behavior remains.\n",
+    }]), reloadToken: "secret" });
+    apps.push(app);
+
+    const synchronization = await app.inject("/api/search?q=synchronization");
+    expect(synchronization.json().hits[0].sections).toEqual([{
+      heading: "Networking",
+      items: [{ markdown: "Packet synchronization changed.", kind: "change", matched: true }],
+    }]);
+
+    const smoke = await app.inject("/api/search?q=smoke");
+    expect(smoke.json().hits[0].sections).toEqual([{
+      heading: "Gameplay",
+      items: [{ markdown: "Outer smoke behavior remains.", kind: "change", matched: true }],
+    }]);
   });
 
   it("uses the earliest headed source preview for title-only hits and unfiltered browse", async () => {
@@ -176,6 +284,36 @@ describe("archive API", () => {
     apps.push(app);
     expect((await app.inject({ method: "POST", url: "/internal/reload" })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: "/internal/reload", headers: { authorization: "Bearer secret" } })).statusCode).toBe(200);
+  });
+
+  it("rejects a body fetch whose search-result digest became stale after a reload", async () => {
+    const contentDir = contentFixture([{
+      filename: "2024-01-01-versioned.md",
+      steamGid: "1",
+      sourceHash: "versioned-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Original smoke behavior.\n",
+    }]);
+    const app = buildServer({ contentDir, reloadToken: "secret" });
+    apps.push(app);
+
+    const staleHit = (await app.inject("/api/search?q=smoke")).json().hits[0];
+    const newBody = "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Replacement smoke behavior.\n";
+    writeNote(contentDir, {
+      filename: "2024-01-01-versioned.md",
+      steamGid: "1",
+      sourceHash: "versioned-source",
+      body: newBody,
+    });
+    expect((await app.inject({ method: "POST", url: "/internal/reload", headers: { authorization: "Bearer secret" } })).statusCode).toBe(200);
+
+    const staleBody = await app.inject(`/api/notes/${staleHit.id}?body_sha256=${staleHit.body_sha256}`);
+    expect(staleBody.statusCode).toBe(409);
+    expect(staleBody.json()).toEqual({ error: "Note body changed; refresh search results" });
+
+    const currentHit = (await app.inject("/api/search?q=smoke")).json().hits[0];
+    const currentBody = await app.inject(`/api/notes/${currentHit.id}?body_sha256=${currentHit.body_sha256}`);
+    expect(currentBody.statusCode).toBe(200);
+    expect(currentBody.json()).toMatchObject({ body: newBody });
   });
 
   it("rejects an unsupported game value in frontmatter at runtime", () => {

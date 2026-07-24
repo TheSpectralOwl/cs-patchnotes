@@ -29,6 +29,7 @@ export type PreviewSection = {
 };
 
 export type SearchHit = Pick<Note, "id" | "title" | "date" | "game" | "steam_gid" | "source_url"> & {
+  body_sha256: string;
   score: number;
   sections: PreviewSection[];
 };
@@ -41,7 +42,8 @@ type PositionedNode = {
 
 type ContextItem = Omit<PreviewItem, "matched"> & {
   order: number;
-  siblings?: ContextItem[];
+  siblingGroups?: ContextItem[][];
+  siblingGroupIndex?: number;
 };
 
 type ContextSection = {
@@ -125,49 +127,80 @@ function contextualSections(body: string): ContextSection[] {
 
   const tree = remark().parse(body) as unknown as PositionedNode;
   const sections: ContextSection[] = [];
-  let current: ContextSection | undefined;
-
-  const requireSection = () => {
-    if (!current) throw new Error("Searchable Markdown content must have a preceding authored heading");
-    return current;
+  const requireSection = (section: ContextSection | undefined) => {
+    if (!section) throw new Error("Searchable Markdown content must have a preceding authored heading");
+    return section;
   };
 
-  const addItem = (section: ContextSection, node: PositionedNode, kind: PreviewItem["kind"], siblings?: ContextItem[]) => {
+  const addItem = (section: ContextSection, node: PositionedNode, kind: PreviewItem["kind"]) => {
     const markdown = inlineSourceSlice(body, node);
     const order = node.position?.start.offset;
     if (order === undefined) throw new Error("Markdown parser returned a node without source positions");
-    const item: ContextItem = { markdown, kind, order, siblings };
+    const item: ContextItem = { markdown, kind, order };
     section.items.push(item);
     return item;
   };
 
-  const walkList = (list: PositionedNode) => {
-    const section = requireSection();
-    const siblings: ContextItem[] = [];
-    const nestedLists: PositionedNode[] = [];
+  const walkSupportedBlocks = (nodes: PositionedNode[], initialSection: ContextSection | undefined) => {
+    let current = initialSection;
+    for (const node of nodes) {
+      if (node.type === "heading") {
+        current = { heading: inlineSourceSlice(body, node), items: [] };
+        sections.push(current);
+        addItem(current, node, "heading");
+      } else if (node.type === "paragraph") {
+        addItem(requireSection(current), node, "prose");
+      } else if (node.type === "list") {
+        walkList(node, current);
+      } else if (node.type === "blockquote") {
+        walkSupportedBlocks(node.children ?? [], current);
+      }
+    }
+    return current;
+  };
+
+  const walkList = (list: PositionedNode, current: ContextSection | undefined) => {
+    const section = requireSection(current);
+    const siblingGroupsBySection = new Map<ContextSection, ContextItem[][]>();
 
     for (const listItem of list.children ?? []) {
       if (listItem.type !== "listItem") continue;
-      const paragraph = listItem.children?.find((child) => child.type === "paragraph");
-      if (paragraph) siblings.push(addItem(section, paragraph, "change", siblings));
-      nestedLists.push(...(listItem.children ?? []).filter((child) => child.type === "list"));
+      let localSection = section;
+      const groupsBySection = new Map<ContextSection, ContextItem[]>();
+
+      for (const child of listItem.children ?? []) {
+        if (child.type === "heading") {
+          localSection = requireSection(walkSupportedBlocks([child], localSection));
+        } else if (child.type === "paragraph") {
+          const item = addItem(requireSection(localSection), child, "change");
+          const group = groupsBySection.get(localSection) ?? [];
+          group.push(item);
+          groupsBySection.set(localSection, group);
+        } else if (child.type === "list") {
+          walkList(child, localSection);
+        } else if (child.type === "blockquote") {
+          walkSupportedBlocks(child.children ?? [], localSection);
+        }
+      }
+
+      for (const [groupSection, group] of groupsBySection) {
+        const siblingGroups = siblingGroupsBySection.get(groupSection) ?? [];
+        siblingGroups.push(group);
+        siblingGroupsBySection.set(groupSection, siblingGroups);
+      }
     }
 
-    for (const nestedList of nestedLists) walkList(nestedList);
+    siblingGroupsBySection.forEach((siblingGroups) => {
+      siblingGroups.forEach((group, siblingGroupIndex) => {
+        group.forEach((item) => {
+          item.siblingGroups = siblingGroups;
+          item.siblingGroupIndex = siblingGroupIndex;
+        });
+      });
+    });
   };
 
-  for (const node of tree.children ?? []) {
-    if (node.type === "heading") {
-      const heading = inlineSourceSlice(body, node);
-      current = { heading, items: [] };
-      sections.push(current);
-      addItem(current, node, "heading");
-    } else if (node.type === "paragraph") {
-      addItem(requireSection(), node, "prose");
-    } else if (node.type === "list") {
-      walkList(node);
-    }
-  }
+  walkSupportedBlocks(tree.children ?? [], undefined);
 
   return sections;
 }
@@ -182,8 +215,12 @@ function compareDecimalIdentifiers(left: string, right: string) {
 
 function verifyGeneratedBody(note: Note, generatedHash: string | undefined) {
   if (!generatedHash) throw new Error(`${note.id} is missing generated_sha256`);
-  const actual = createHash("sha256").update(note.body).digest("hex");
+  const actual = noteBodySha256(note);
   if (actual !== generatedHash) throw new Error(`${note.id} has changed outside the converter`);
+}
+
+export function noteBodySha256(note: Pick<Note, "body">) {
+  return createHash("sha256").update(note.body).digest("hex");
 }
 
 export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(process.cwd(), "..", "cs-patchnotes-content")): CorpusIndex {
@@ -213,7 +250,11 @@ export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(proce
   const contexts = notes.map((note) => contextualSections(note.body));
   notes.forEach((note, noteIndex) => {
     const frequencies = new Map<string, number>();
-    for (const token of tokens(`${note.title}\n${note.body}`)) frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
+    const contextualMarkdown = contexts[noteIndex]
+      .flatMap((section) => section.items)
+      .map((item) => item.markdown)
+      .join("\n");
+    for (const token of tokens(`${note.title}\n${contextualMarkdown}`)) frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
     for (const [token, count] of frequencies) terms.set(token, [...(terms.get(token) ?? []), [noteIndex, count]]);
   });
   return { notes, terms, contexts };
@@ -230,7 +271,7 @@ function nearestChange(items: ContextItem[], matched: ContextItem) {
     .sort((left, right) => Math.abs(left.order - matched.order) - Math.abs(right.order - matched.order))[0];
 }
 
-function projectSections(sections: ContextSection[], queryTokens: string[]): PreviewSection[] {
+function projectSections(sections: ContextSection[], queryTokens: string[], allowFallback: boolean): PreviewSection[] {
   const matchedSections = sections.flatMap((section) => {
     const matched = queryTokens.length === 0 ? [] : section.items.filter((item) => matchesTokens(item.markdown, queryTokens));
     if (matched.length === 0) return [];
@@ -239,10 +280,13 @@ function projectSections(sections: ContextSection[], queryTokens: string[]): Pre
     for (const item of matched) {
       selected.add(item);
       if (item.kind === "change") {
-        const siblings = item.siblings ?? [];
-        const index = siblings.indexOf(item);
-        if (index > 0) selected.add(siblings[index - 1]);
-        if (index >= 0 && index < siblings.length - 1) selected.add(siblings[index + 1]);
+        const siblings = item.siblingGroups;
+        const index = item.siblingGroupIndex;
+        if (siblings && index !== undefined) {
+          for (const sibling of siblings[index] ?? []) selected.add(sibling);
+          for (const sibling of siblings[index - 1] ?? []) selected.add(sibling);
+          for (const sibling of siblings[index + 1] ?? []) selected.add(sibling);
+        }
       } else {
         const change = nearestChange(section.items, item);
         if (change) selected.add(change);
@@ -257,7 +301,7 @@ function projectSections(sections: ContextSection[], queryTokens: string[]): Pre
     }];
   });
 
-  if (matchedSections.length > 0) return matchedSections;
+  if (matchedSections.length > 0 || !allowFallback) return matchedSections;
   const fallback = sections.find((section) => section.items.length > 0);
   if (!fallback) return [];
   const item = fallback.items[0];
@@ -272,21 +316,27 @@ export function searchCorpus(index: CorpusIndex, query: string, filters: { game?
     for (const [noteIndex, count] of index.terms.get(token) ?? []) scores.set(noteIndex, (scores.get(noteIndex) ?? 0) + count);
   }
   return [...scores]
-    .map(([noteIndex, score]) => ({ note: index.notes[noteIndex], context: index.contexts[noteIndex], score }))
+    .map(([noteIndex, score]) => ({
+      note: index.notes[noteIndex],
+      context: index.contexts[noteIndex],
+      score,
+      allowFallback: queryTokens.length === 0 || matchesTokens(index.notes[noteIndex].title, queryTokens),
+    }))
     .filter(({ note }) => !note.duplicate_of)
     .filter(({ note }) => !filters.game || note.game === filters.game)
     .filter(({ note }) => !filters.from || note.date >= filters.from)
     .filter(({ note }) => !filters.to || note.date <= filters.to)
     .sort((left, right) => right.score - left.score || right.note.date.localeCompare(left.note.date))
-    .map(({ note, context, score }) => ({
+    .map(({ note, context, score, allowFallback }) => ({
         id: note.id,
         title: note.title,
         date: note.date,
         game: note.game,
         steam_gid: note.steam_gid,
         source_url: note.source_url,
+        body_sha256: noteBodySha256(note),
         score,
-        sections: projectSections(context, queryTokens),
+        sections: projectSections(context, queryTokens, allowFallback),
       }));
 }
 
