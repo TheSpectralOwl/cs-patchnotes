@@ -107,6 +107,10 @@ function deferredResolver<T>(promise: Promise<T>): Deferred<T> | undefined {
   return resolverByPromise.get(promise) as Deferred<T> | undefined;
 }
 
+function abortedRequest() {
+  return new DOMException("Aborted", "AbortError");
+}
+
 export class NoteBodyCache<T> {
   #records = new Map<string, NoteBodyRecord<T>>();
   #queue: string[] = [];
@@ -150,6 +154,7 @@ export class NoteBodyCache<T> {
     for (const [key, record] of this.#records) {
       if (visible.has(key)) continue;
       record.controller?.abort();
+      if (record.status === "pending") deferredResolver(record.promise)?.reject(abortedRequest());
       this.#records.delete(key);
     }
     this.onChange?.();
