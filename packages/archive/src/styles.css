@@ -171,6 +171,8 @@ button { cursor: pointer; }
 
 .entry-content { min-width: 0; }
 
+.timeline-title { margin: 0; }
+
 .note-title,
 .note-page article > h1,
 .note-body h1,

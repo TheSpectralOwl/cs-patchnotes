@@ -202,6 +202,9 @@ describe("contextual timeline entries", () => {
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain('aria-controls="patch-note-one"');
     expect(markup).toContain('id="patch-note-one"');
+    expect(markup).toMatch(/<h2 class="timeline-title"><a href="[^"]+" class="note-title">Smoke Update<\/a><\/h2>/);
+    expect(markup).toContain('<h3 class="context-heading"><em><mark>smoke</mark></em> heading</h3>');
+    expect(markup).toContain('<h3 class="context-heading">Second section</h3>');
     expect(markup).toContain('href="/notes/note-one?q=Smoke&amp;game=cs2&amp;from=2023-09-27&amp;to="');
     expect(markup).toContain("Complete <em>smoke</em> patch.");
   });
