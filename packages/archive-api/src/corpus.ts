@@ -302,9 +302,15 @@ function projectSections(sections: ContextSection[], queryTokens: string[], allo
   });
 
   if (matchedSections.length > 0 || !allowFallback) return matchedSections;
-  const fallback = sections.find((section) => section.items.length > 0);
+  const fallback = queryTokens.length === 0
+    ? sections.find((section) => section.items.some((item) => item.kind === "change"))
+      ?? sections.find((section) => section.items.some((item) => item.kind === "prose"))
+      ?? sections.find((section) => section.items.length > 0)
+    : sections.find((section) => section.items.length > 0);
   if (!fallback) return [];
-  const item = fallback.items[0];
+  const item = queryTokens.length === 0
+    ? fallback.items.find((candidate) => candidate.kind === "change") ?? fallback.items.find((candidate) => candidate.kind === "prose") ?? fallback.items[0]
+    : fallback.items[0];
   return [{ heading: fallback.heading, items: [{ markdown: item.markdown, kind: item.kind, matched: false }] }];
 }
 

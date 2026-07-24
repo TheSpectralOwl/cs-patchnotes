@@ -230,7 +230,7 @@ describe("archive API", () => {
     }]);
   });
 
-  it("uses the earliest headed source preview for title-only hits and unfiltered browse", async () => {
+  it("uses a meaningful patch change for unfiltered browse while retaining title-only fallback", async () => {
     const app = buildServer({ contentDir: contentFixture([
       {
         filename: "2024-01-01-older.md",
@@ -259,7 +259,10 @@ describe("archive API", () => {
 
     const browse = await app.inject("/api/search");
     expect(browse.json().hits.map((hit: { date: string }) => hit.date)).toEqual(["2024-02-01", "2024-01-01"]);
-    expect(browse.json().hits[0].sections[0]).toMatchObject({ heading: "Newer patch" });
+    expect(browse.json().hits[0].sections[0]).toEqual({
+      heading: "Maps",
+      items: [{ markdown: "Newer preview.", kind: "change", matched: false }],
+    });
   });
 
   it("keeps represented game and date filters with compact contextual responses", async () => {
