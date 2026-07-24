@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { auditCorpus, blockingFindings } = require("./audit.cjs");
-const { assertNoSymlinks, assertSteamGid } = require("./corpus.cjs");
+const { assertNoSymlinks, assertSteamGid, corpusSnapshot } = require("./corpus.cjs");
 const { convertAll } = require("./convert.cjs");
 const { fetchAllNews, isPatchNote, toRawRecord } = require("../tools/seed-raw-from-steam.cjs");
 
@@ -22,6 +21,19 @@ function assertAuditClean(audit) {
     });
     throw new Error(`Corpus audit failed: ${failures.join("; ")}`);
   }
+}
+
+function publishStagedCorpus(contentDir, stagedContentDir, sourceSnapshot) {
+  if (corpusSnapshot(contentDir) !== sourceSnapshot) throw new Error("Source corpus changed while the Steam update was staged");
+  // The snapshot detects edits before publication; it does not claim to close
+  // hostile TOCTOU races that require descriptor-relative filesystem APIs.
+  const backupDir = path.join(path.dirname(stagedContentDir), "backup");
+  fs.renameSync(contentDir, backupDir);
+  try { fs.renameSync(stagedContentDir, contentDir); } catch (error) {
+    fs.renameSync(backupDir, contentDir);
+    throw error;
+  }
+  fs.rmSync(backupDir, { recursive: true, force: true });
 }
 
 async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR, options = {}) {
@@ -59,10 +71,12 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   summary.added = planned.length;
   if (dryRun) return summary;
 
-  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-update-"));
+  const sourceSnapshot = corpusSnapshot(contentDir);
+  const stagingDir = fs.mkdtempSync(path.join(path.dirname(contentDir), `.${path.basename(contentDir)}.staging-`));
   const stagedContentDir = path.join(stagingDir, "content");
   try {
-    fs.cpSync(contentDir, stagedContentDir, { recursive: true });
+    fs.cpSync(contentDir, stagedContentDir, { recursive: true, dereference: false });
+    assertNoSymlinks(stagedContentDir);
     const stagedRawDir = path.join(stagedContentDir, "raw", "steam");
     fs.mkdirSync(stagedRawDir, { recursive: true });
     for (const entry of planned) {
@@ -79,8 +93,7 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
     }
     summary.audit = audit(stagedContentDir);
     assertAuditClean(summary.audit);
-    assertNoSymlinks(contentDir);
-    fs.cpSync(stagedContentDir, contentDir, { recursive: true, force: true });
+    publishStagedCorpus(contentDir, stagedContentDir, sourceSnapshot);
     return summary;
   } finally {
     fs.rmSync(stagingDir, { recursive: true, force: true });

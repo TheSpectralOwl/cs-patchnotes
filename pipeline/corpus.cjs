@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const STEAM_GID_PATTERN = /^[0-9]+$/;
 function isSteamGid(value) { return typeof value === "string" && STEAM_GID_PATTERN.test(value); }
@@ -28,4 +29,22 @@ function assertNoSymlinks(root) {
   }
 }
 
-module.exports = { assertNoSymlinks, assertSteamGid, isSteamGid, resolveContainedPath };
+function corpusSnapshot(root) {
+  assertNoSymlinks(root);
+  const hash = crypto.createHash("sha256");
+  function visit(directory) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+      const filename = path.join(directory, entry.name);
+      const stat = fs.lstatSync(filename);
+      if (stat.isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${filename}`);
+      hash.update(`${entry.isDirectory() ? "directory" : "file"}\0${path.relative(root, filename)}\0`);
+      if (stat.isDirectory()) visit(filename);
+      else if (stat.isFile()) hash.update(fs.readFileSync(filename));
+      else throw new Error(`Candidate corpus contains an unsupported filesystem entry: ${filename}`);
+    }
+  }
+  visit(root);
+  return hash.digest("hex");
+}
+
+module.exports = { assertNoSymlinks, assertSteamGid, corpusSnapshot, isSteamGid, resolveContainedPath };
