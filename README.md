@@ -64,8 +64,10 @@ Worker bundle and client assets to `packages/archive/dist/server` and
 `packages/archive/dist/client` respectively.
 
 Use `npm run version:cloudflare` as the Worker Builds version command. Both
-upload scripts preserve dashboard variables and deploy the generated Start
-bundle instead of rebundling the source entry.
+upload scripts deploy the generated Start bundle/config instead of rebundling
+the source entry, while `--keep-vars` retains dashboard-managed runtime
+variables. For VPS and production acceptance after an upload or refresh, follow
+[the archive deployment guide](docs/archive-vps-deploy.md).
 
 Set the Worker runtime variable `API_URL` to the public origin of the archive
 read API. The Worker proxies browser `/api/*` requests to that API; no content
