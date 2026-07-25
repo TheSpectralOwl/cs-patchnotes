@@ -11,6 +11,19 @@ test("uses the archive Worker configuration and generated Start bundle", () => {
   const builder = fs.readFileSync(path.join(__dirname, "../build-cloudflare.cjs"), "utf8");
   assert.match(config, /"main": "packages\/archive\/src\/server-entry\.ts"/);
   assert.match(config, /"nodejs_compat"/);
+  assert.doesNotMatch(config, /API_URL/);
   assert.equal(archivePackage.devDependencies.vite, "7.3.6");
   assert.match(builder, /@cs-patchnotes\/archive/);
+  assert.match(archivePackage.scripts["deploy:cloudflare"], /\bwrangler deploy\b/);
+  assert.match(
+    archivePackage.scripts["deploy:cloudflare"],
+    /--config dist\/server\/wrangler\.json/,
+  );
+  assert.match(archivePackage.scripts["deploy:cloudflare"], /--keep-vars/);
+  assert.match(archivePackage.scripts["version:cloudflare"], /\bwrangler versions upload\b/);
+  assert.match(
+    archivePackage.scripts["version:cloudflare"],
+    /--config dist\/server\/wrangler\.json/,
+  );
+  assert.match(archivePackage.scripts["version:cloudflare"], /--keep-vars/);
 });
