@@ -22,6 +22,7 @@ function response(status, body) {
 function fixture({ commandFailure, commandOutput, fetchFailure, fetchResponses = [] } = {}) {
   const trace = [];
   const output = [];
+  const requests = [];
   let fetchIndex = 0;
   const options = {
     contentDir: "/fixture/content",
@@ -38,6 +39,7 @@ function fixture({ commandFailure, commandOutput, fetchFailure, fetchResponses =
     async fetch(url, init = {}) {
       const call = `${init.method || "GET"} ${url.pathname}`;
       trace.push(call);
+      requests.push({ url, init });
       if (fetchFailure?.(call)) throw fetchFailure(call);
       return fetchResponses[fetchIndex++];
     },
@@ -45,7 +47,7 @@ function fixture({ commandFailure, commandOutput, fetchFailure, fetchResponses =
       output.push(message);
     },
   };
-  return { options, dependencies, output, trace };
+  return { options, dependencies, output, requests, trace };
 }
 
 function assertSafeDiagnostics(output) {
@@ -179,6 +181,9 @@ test("confirms refresh in one ordered, concise revision and health summary", asy
     "GET /health",
   ]);
   assert.equal(testCase.output.length, 1);
+  const reloadRequest = testCase.requests.find((request) => request.init.method === "POST");
+  assert.equal(reloadRequest.url.pathname, "/internal/reload");
+  assert.equal(reloadRequest.init.headers.authorization, AUTHORIZATION);
   assert.match(testCase.output[0], /revision abc123/);
   assert.match(testCase.output[0], /verification passed/);
   assert.match(testCase.output[0], /before notes=275 visible_notes=260/);
