@@ -429,9 +429,8 @@ export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(proce
   for (const [gid, manifest] of noteLayouts) {
     if (manifest.override_revision !== undefined && !overrides.has(gid)) throw new Error(`Note manifest for ${gid} selects a missing override`);
     const rawLayout = rawLayouts.get(gid)!;
-    const effective = manifest.override_revision === rawLayout.manifest.latest_revision
-      ? overrides.get(gid)!
-      : verifyNoteEvidence(manifest.note_id!, readFileSync(containedPath(join(notesRoot, gid), `${rawLayout.manifest.latest_revision}.md`), "utf8"), rawLayout.revisions.get(rawLayout.manifest.latest_revision)!, gid, rawLayout.manifest.latest_revision, manifest.legacy_migration_revisions ?? []);
+    const effective = overrides.get(gid)
+      ?? verifyNoteEvidence(manifest.note_id!, readFileSync(containedPath(join(notesRoot, gid), `${rawLayout.manifest.latest_revision}.md`), "utf8"), rawLayout.revisions.get(rawLayout.manifest.latest_revision)!, gid, rawLayout.manifest.latest_revision, manifest.legacy_migration_revisions ?? []);
     notes.push(effective);
   }
 

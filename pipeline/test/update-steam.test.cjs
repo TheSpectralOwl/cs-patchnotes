@@ -28,7 +28,7 @@ test("appends changed source evidence and reselects an earlier A to B to A revis
   assert.equal(final.latest_revision, first.latest_revision);
 });
 
-test("retains historical override evidence while generating a newly selected source revision", async () => {
+test("retains manual override presentation while recording a newly selected source revision", async () => {
   const contentDir = createCorpus();
   const a = "[ GAMEPLAY ]\n- A.\n";
   await updateSteam(contentDir, { fetchNews: async () => [item(a)] });
