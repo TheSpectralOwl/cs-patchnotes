@@ -5,9 +5,10 @@ const path = require("node:path");
 const { auditCorpus, blockingFindings } = require("./audit.cjs");
 const { assertNoSymlinks, assertSteamGid, corpusSnapshot } = require("./corpus.cjs");
 const { convertAll } = require("./convert.cjs");
+const { rawManifest, rawRevisionDirectory, readRawLayouts, resolveContainedPath, revisionFilename, sha256 } = require("./revision-layout.cjs");
 const { fetchAllNews, isPatchNote, toRawRecord } = require("../tools/seed-raw-from-steam.cjs");
 
-const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
+const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content-v2");
 
 function assertAuditClean(audit) {
   const findings = blockingFindings(audit);
@@ -41,8 +42,8 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   const convert = options.convert || convertAll;
   const audit = options.audit || auditCorpus;
   const dryRun = options.dryRun || false;
-  const rawDir = path.join(contentDir, "raw", "steam");
   assertNoSymlinks(contentDir);
+  const existingRaws = readRawLayouts(contentDir);
   const fetched = await fetchNews();
   const items = fetched instanceof Map ? [...fetched.values()] : fetched;
   const accepted = items.filter(isPatchNote);
@@ -54,21 +55,21 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   }
   accepted.sort((left, right) => left.gid.localeCompare(right.gid));
   const planned = [];
-  const summary = { fetched: items.length, accepted: accepted.length, existing: 0, added: 0, conflicts: [], dry_run: dryRun };
+  const summary = { fetched: items.length, accepted: accepted.length, existing: 0, added: 0, reselected: 0, conflicts: [], dry_run: dryRun };
 
   for (const item of accepted) {
-    const filename = path.join(rawDir, `${item.gid}.json`);
     const contents = `${JSON.stringify(toRawRecord(item), null, 2)}\n`;
-    if (fs.existsSync(filename)) {
-      if (fs.readFileSync(filename, "utf8") !== contents) summary.conflicts.push(filename);
-      else summary.existing++;
-    } else {
-      planned.push({ gid: item.gid, contents });
-    }
+    const revision = sha256(contents);
+    const current = existingRaws.get(item.gid);
+    if (!current) planned.push({ gid: item.gid, contents, revision, kind: "new" });
+    else if (current.revisions.has(revision)) {
+      if (current.manifest.latest_revision === revision) summary.existing++;
+      else planned.push({ gid: item.gid, revision, kind: "reselect" });
+    } else planned.push({ gid: item.gid, contents, revision, kind: "append" });
   }
 
-  if (summary.conflicts.length > 0) return summary;
-  summary.added = planned.length;
+  summary.added = planned.filter((entry) => entry.kind === "new" || entry.kind === "append").length;
+  summary.reselected = planned.filter((entry) => entry.kind === "reselect").length;
   if (dryRun) return summary;
 
   const sourceSnapshot = corpusSnapshot(contentDir);
@@ -77,20 +78,26 @@ async function updateSteam(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTE
   try {
     fs.cpSync(contentDir, stagedContentDir, { recursive: true, dereference: false });
     assertNoSymlinks(stagedContentDir);
-    const stagedRawDir = path.join(stagedContentDir, "raw", "steam");
-    fs.mkdirSync(stagedRawDir, { recursive: true });
+    fs.mkdirSync(path.join(stagedContentDir, "raw", "steam"), { recursive: true });
     for (const entry of planned) {
-      fs.writeFileSync(path.join(stagedRawDir, `${entry.gid}.json`), entry.contents);
+      const directory = rawRevisionDirectory(stagedContentDir, entry.gid);
+      const current = existingRaws.get(entry.gid);
+      if (entry.kind === "new") {
+        fs.mkdirSync(directory);
+        fs.writeFileSync(resolveContainedPath(directory, revisionFilename(entry.revision, "json")), entry.contents);
+        fs.writeFileSync(resolveContainedPath(directory, "index.json"), `${JSON.stringify(rawManifest(entry.gid, entry.revision), null, 2)}\n`);
+        continue;
+      }
+      const manifest = { ...current.manifest, revisions: [...current.manifest.revisions] };
+      if (entry.kind === "append") {
+        fs.writeFileSync(resolveContainedPath(directory, revisionFilename(entry.revision, "json")), entry.contents);
+        manifest.revisions.push(entry.revision);
+      }
+      manifest.latest_revision = entry.revision;
+      fs.writeFileSync(resolveContainedPath(directory, "index.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     }
 
     summary.conversion = convert(stagedContentDir);
-    if (summary.conversion.conflicts.length > 0) {
-      summary.conflicts = summary.conversion.conflicts.map((conflict) => path.join(
-        contentDir,
-        path.relative(stagedContentDir, conflict.note),
-      ));
-      return summary;
-    }
     summary.audit = audit(stagedContentDir);
     assertAuditClean(summary.audit);
     publishStagedCorpus(contentDir, stagedContentDir, sourceSnapshot);
@@ -111,6 +118,7 @@ if (require.main === module) {
       accepted: summary.accepted,
       existing: summary.existing,
       added: summary.added,
+      reselected: summary.reselected,
       conflicts: summary.conflicts,
       dry_run: summary.dry_run,
       conversion: summary.conversion,

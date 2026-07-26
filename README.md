@@ -42,6 +42,30 @@ API applies any presentation deduplication.
 new raw captures and converted notes in the content repository after a successful
 run.
 
+## Revision activation
+
+The VPS does not serve a mutable content checkout. `CONTENT_REVISION_ROOT` holds
+an `active` marker containing exactly one lowercase, full 40-character content
+Git SHA. The API loads only `worktrees/<sha>` under that root and includes the
+loaded SHA as `content_sha` in `/health`.
+
+Use `npm run activate:content -- <full-sha>` only from the VPS activation
+environment. It fetches and verifies a detached candidate worktree before
+atomically replacing `active`, then invokes the SHA-bound private reload and
+confirms that health reports that SHA. An explicit reload rejection restores the
+old marker. A network or health-confirmation uncertainty deliberately leaves the
+verified candidate selected and reports an unconfirmed outcome.
+
+Activation uses a local owner-record lock. A concurrent activation is refused.
+After 30 minutes, a stale lock is reclaimed only when its same-host owner PID is
+confirmed dead; live, malformed, or foreign-host locks are left intact for
+manual inspection.
+
+The `Activate Content Revision` workflow accepts `repository_dispatch` event
+type `activate-content` with `client_payload.sha`. It validates that exact SHA
+and serializes activations. Configure `SSH_HOST`, `SSH_USER`, and `SSH_KEY` in
+the application repository for the VPS account that owns the revision root.
+
 ## Continuous integration
 
 `corpus.yml` checks the pipeline tests and archive application type-check on every

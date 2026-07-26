@@ -21,8 +21,9 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check:infra
       - run: npm run test:pipeline
+      - run: npm run test:activation
       - run: npm run check -w @cs-patchnotes/archive
       - run: npm run build -w @cs-patchnotes/archive-api
       - run: npm test -w @cs-patchnotes/archive-api
       - run: npm run build:cloudflare
-      - run: CONTENT_HOST_DIR=/tmp RELOAD_TOKEN=ci TUNNEL_TOKEN=ci docker compose -f docker-compose.archive.yml --profile vps config
+      - run: CONTENT_REVISION_ROOT=/tmp RELOAD_TOKEN=ci TUNNEL_TOKEN=ci docker compose -f docker-compose.archive.yml --profile vps config

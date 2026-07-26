@@ -17,9 +17,10 @@
     "deploy:cloudflare": "npm run deploy:cloudflare -w @cs-patchnotes/archive",
     "version:cloudflare": "npm run version:cloudflare -w @cs-patchnotes/archive",
     "test:pipeline": "node --test pipeline/test/*.test.cjs",
+    "test:activation": "node --test tools/test/*.test.cjs",
     "verify:corpus": "node pipeline/verify.cjs",
     "update:steam": "node pipeline/update-steam.cjs",
-    "refresh:archive-api": "node tools/refresh-archive-api.cjs",
+    "activate:content": "node tools/activate-content.cjs",
     "dev": "npm run dev -w @cs-patchnotes/archive",
     "check:secrets": "bash scripts/check-no-secrets.sh",
     "check:infra": "npm run check:secrets"

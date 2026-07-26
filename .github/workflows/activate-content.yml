@@ -1,0 +1,56 @@
+name: Activate Content Revision
+
+on:
+  repository_dispatch:
+    types: [activate-content]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full content Git commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: content-activation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.value }}
+    steps:
+      - id: sha
+        env:
+          SHA: ${{ inputs.sha || github.event.client_payload.sha }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "Activation requires one full lowercase content Git SHA." >&2
+            exit 1
+          fi
+          echo "value=$SHA" >> "$GITHUB_OUTPUT"
+
+  activate:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -euo pipefail
+            archive_dir="$HOME/cs-patchnotes-archive"
+            test -f "$archive_dir/.env"
+            cd "$archive_dir"
+            CONTENT_SHA='${{ needs.validate.outputs.sha }}' \
+            CONTENT_REVISION_ROOT="$HOME/cs-patchnotes-content-revisions" \
+            CONTENT_REPOSITORY_DIR="$HOME/cs-patchnotes-content-repo" \
+            ARCHIVE_API_URL="http://127.0.0.1:3001" \
+            RELOAD_TOKEN="$(grep '^RELOAD_TOKEN=' .env | cut -d= -f2-)" \
+            node tools/activate-content.cjs

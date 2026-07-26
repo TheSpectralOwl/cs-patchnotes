@@ -1,7 +1,8 @@
 # Archive VPS Deployment
 
-The archive API reads a read-only checkout of `cs-patchnotes-content` and has no
-database or search-index volume.
+The archive API reads a selected, read-only content worktree and has no database
+or search-index volume. Docker publishes its private reload port only to VPS
+loopback; Cloudflare reaches it over the compose internal network.
 
 ## One-time VPS setup
 
@@ -13,34 +14,43 @@ database or search-index volume.
    hostname.
 4. Trigger the `Deploy Archive API` GitHub workflow from `main`.
 
-The workflow creates or updates two separate checkouts:
+The workflow creates or updates the application checkout, a content Git
+repository, and a revision root:
 
 ```text
 ~/cs-patchnotes-archive          # code and archive compose stack
-~/cs-patchnotes-content          # source corpus
+~/cs-patchnotes-content-repo     # Git repository used to create worktrees
+~/cs-patchnotes-content-revisions # active marker and immutable candidates
 ```
 
-## Content refresh
+## Content activation
 
-After a reviewed content commit reaches `main`, run this on the VPS or invoke it
-from an authenticated external webhook bridge:
+After a reviewed content commit reaches `main`, activate its exact full SHA on
+the VPS or dispatch it from the content workflow:
 
 ```sh
 cd ~/cs-patchnotes-archive
-CONTENT_DIR="$HOME/cs-patchnotes-content" \
+CONTENT_SHA="<full-40-character-content-commit-sha>"
+export CONTENT_SHA
+
+CONTENT_REVISION_ROOT="$HOME/cs-patchnotes-content-revisions" \
+CONTENT_REPOSITORY_DIR="$HOME/cs-patchnotes-content-repo" \
 ARCHIVE_API_URL="http://127.0.0.1:3001" \
 RELOAD_TOKEN="$(grep '^RELOAD_TOKEN=' .env | cut -d= -f2-)" \
-node tools/refresh-archive-api.cjs
+node tools/activate-content.cjs
 ```
 
-The command fast-forward pulls the content checkout, verifies the complete
-corpus, and asks the API to atomically reload. It does not rebuild or deploy the
-Cloudflare Worker.
+The command fetches one requested SHA, creates or reuses its detached worktree,
+verifies the complete corpus, atomically publishes the active marker, and asks
+the API to reload that exact SHA. It does not rebuild or deploy the Cloudflare
+Worker. The VPS account needs Git, Node 22, and the application checkout's
+installed dependencies in addition to access to the content repository and
+revision root.
 
-## Release and refresh acceptance
+## Release and activation acceptance
 
 Run these checks from an authorized environment after a Worker upload or a VPS
-content refresh. Supply the real public origins only in the current shell; do
+content activation. Supply the real public origins only in the current shell; do
 not commit, paste into tickets, or echo deployment values, authorization
 headers, or reload credentials.
 
@@ -66,7 +76,7 @@ not change a direct-note route, browser behavior, or either runtime origin.
 
 ```sh
 curl --fail-with-body --silent --show-error "$API_ORIGIN/health" \
-  | jq -e '.ok == true and (.notes | type == "number") and (.visible_notes | type == "number")'
+  | jq -e '.ok == true and (.notes | type == "number") and (.visible_notes | type == "number") and (.content_sha | test("^[a-f0-9]{40}$"))'
 
 SEARCH_JSON="$(curl --fail-with-body --silent --show-error "$WORKER_ORIGIN/api/search?q=smoke")"
 NOTE_ID="$(jq -er '.hits[0].id' <<<"$SEARCH_JSON")"
@@ -80,35 +90,45 @@ first live hit rather than being a hard-coded corpus ID. A successful final
 request proves the current direct-note route responds through the released
 Worker without adding a browser operations surface.
 
-On the VPS, retain `RELOAD_TOKEN` in its ignored `.env` file and run the refresh
-command without printing the token or a reload response:
+On the VPS, retain `RELOAD_TOKEN` in its ignored `.env` file and run the
+activation command without printing the token or a reload response:
 
 ```sh
 cd ~/cs-patchnotes-archive
-CONTENT_DIR="$HOME/cs-patchnotes-content" \
+CONTENT_SHA="<full-40-character-content-commit-sha>"
+export CONTENT_SHA
+
+CONTENT_REVISION_ROOT="$HOME/cs-patchnotes-content-revisions" \
+CONTENT_REPOSITORY_DIR="$HOME/cs-patchnotes-content-repo" \
 ARCHIVE_API_URL="http://127.0.0.1:3001" \
 RELOAD_TOKEN="$(grep '^RELOAD_TOKEN=' .env | cut -d= -f2-)" \
-node tools/refresh-archive-api.cjs
+node tools/activate-content.cjs
 
 curl --fail-with-body --silent --show-error "http://127.0.0.1:3001/health" \
-  | jq -e '.ok == true and (.notes | type == "number") and (.visible_notes | type == "number")'
+  | jq -e '.ok == true and (.notes | type == "number") and (.visible_notes | type == "number") and (.content_sha == env.CONTENT_SHA)'
 ```
 
-The refresh command stops at each boundary in this order: preflight, Git
-fast-forward, verification, baseline health, reload, and health confirmation.
-A confirmed terminal summary includes the checked-out revision, successful
-verification, and before/after `notes` and `visible_notes` counts. Count
-changes are evidence, not a new release gate. Keep routine evidence in terminal
-output or the deployment record; this procedure creates no persistent log,
-monitoring surface, dashboard, automatic retry, reset, or rollback.
+The activation command stops at each boundary in this order: preflight,
+candidate preparation, verification, marker publication, reload, and health
+confirmation. A confirmed summary includes the requested SHA and corpus counts.
+An HTTP reload rejection restores the previous marker. A network error or failed
+health confirmation leaves the verified candidate selected but unconfirmed; do
+not automatically retry or replace it.
+
+Activation creates `.activation-lock/owner.json` under the revision root. A
+second activation refuses a fresh lock. After 30 minutes it may recover a stale
+lock only when the recorded PID is confirmed dead on the same host. A live,
+missing, malformed, or foreign-host owner record is never removed automatically;
+inspect and resolve that lock manually.
 
 If the command exits nonzero, use its named stage and safe output to choose the
 manual next action:
 
 | Stage | Manual next action |
 | --- | --- |
-| `preflight` | Configure the required VPS values in ignored configuration, or resolve the dirty content checkout before rerunning manually. |
-| `Git fast-forward` | Reconcile the content checkout history manually; do not reset it automatically. |
-| `verification` | Inspect the candidate checkout at its current revision, correct or review the failure, then rerun manually. Verification failure leaves that candidate checkout available for inspection and does not reload the API. |
-| `reload` | Check private API connectivity and reload authorization manually. A rejected or unreachable reload leaves the prior in-memory index active; do not retry automatically. |
-| `health confirmation` | Run the API health check manually before further operation. A failed confirmation leaves the refresh unconfirmed; do not claim success or attempt another index swap automatically. |
+| `preflight` | Configure the required ignored VPS values, provide a full lowercase SHA, or wait for an existing activation to finish. |
+| `candidate` | Inspect the requested commit and its detached candidate. Do not change the active marker. |
+| `verification` | Correct or review the candidate. Verification failure leaves the prior marker active. |
+| `publication` | Repair revision-root permissions or its current marker before retrying. |
+| `reload` | A rejected reload restores the prior marker. An unreachable reload leaves the selected candidate unconfirmed; inspect loopback connectivity and health manually. |
+| `health confirmation` | Run the API health check manually. The candidate remains selected but must not be claimed confirmed until `content_sha` matches. |

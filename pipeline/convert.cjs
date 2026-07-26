@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 
-const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { assertNoSymlinks, assertRawRecord, resolveContainedPath } = require("./corpus.cjs");
+const { assertNoSymlinks } = require("./corpus.cjs");
+const {
+  noteRevisionDirectory,
+  rawRevisionDirectory,
+  readNoteLayouts,
+  readRawLayouts,
+  resolveContainedPath,
+  revisionFilename,
+  sha256,
+} = require("./revision-layout.cjs");
 
 const CONVERTER_VERSION = 6;
-const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
-
-function sha256(value) {
-  return crypto.createHash("sha256").update(value).digest("hex");
-}
+const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content-v2");
 
 function decodeEntities(value) {
   const named = {
@@ -127,7 +131,7 @@ function generatedBody(raw) {
   return `# ${raw.title}\n\n${toMarkdown(raw.body)}`;
 }
 
-function renderNote(raw, body) {
+function renderNote(raw, body, sourceRevision) {
   const frontmatter = [
     "---",
     `title: ${JSON.stringify(raw.title)}`,
@@ -138,6 +142,7 @@ function renderNote(raw, body) {
     `steam_gid: ${JSON.stringify(raw.gid)}`,
     `source_url: ${JSON.stringify(raw.source_url)}`,
     `source_sha256: ${JSON.stringify(raw.body_sha256)}`,
+    ...(sourceRevision ? [`source_revision: ${JSON.stringify(sourceRevision)}`] : []),
     `converter_version: ${JSON.stringify(CONVERTER_VERSION)}`,
     `generated_sha256: ${JSON.stringify(sha256(body))}`,
     "---",
@@ -167,104 +172,56 @@ function parseNote(contents) {
   return { frontmatter, body: match[2] };
 }
 
-function loadRawRecords(contentDir) {
-  const rawDir = path.join(contentDir, "raw", "steam");
-  return fs
-    .readdirSync(rawDir)
-    .filter((filename) => filename.endsWith(".json"))
-    .sort()
-    .map((filename) => {
-      const raw = JSON.parse(fs.readFileSync(path.join(rawDir, filename), "utf8"));
-      assertRawRecord(raw, `Raw record in ${filename}`);
-      return raw;
-    });
-}
-
-function writeIfChanged(filename, contents) {
-  if (fs.existsSync(filename) && fs.readFileSync(filename, "utf8") === contents) {
-    return false;
-  }
-  fs.writeFileSync(filename, contents);
-  return true;
-}
-
 function convertAll(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR) {
-  const notesDir = path.join(contentDir, "content", "notes");
-  const overridesDir = path.join(contentDir, "overrides");
-  // This rejects existing links before the converter can read an override or
-  // write output through one. Concurrent hostile path replacement requires
-  // descriptor-relative no-follow operations that Node's path APIs lack.
   assertNoSymlinks(contentDir);
-  fs.mkdirSync(notesDir, { recursive: true });
-  if (fs.lstatSync(notesDir).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${notesDir}`);
-
-  const records = loadRawRecords(contentDir);
-  const filenameCounts = new Map();
-  for (const raw of records) {
-    const filename = noteFilename(raw);
-    filenameCounts.set(filename, (filenameCounts.get(filename) || 0) + 1);
-  }
-
-  const summary = { created: 0, regenerated: 0, unchanged: 0, preserved: 0, overridden: 0, conflicts: [] };
-  for (const raw of records) {
-    const filename = noteFilename(raw, filenameCounts.get(noteFilename(raw)) > 1);
-
-    const target = resolveContainedPath(notesDir, filename);
-    const override = resolveContainedPath(overridesDir, `${raw.gid}.md`);
-    if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${target}`);
-    if (fs.existsSync(override) && fs.lstatSync(override).isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${override}`);
-    if (fs.existsSync(override)) {
-      if (writeIfChanged(target, fs.readFileSync(override, "utf8"))) {
-        summary.overridden++;
-      } else {
-        summary.unchanged++;
-      }
-      continue;
+  fs.mkdirSync(path.join(contentDir, "raw", "steam"), { recursive: true });
+  fs.mkdirSync(path.join(contentDir, "content", "notes"), { recursive: true });
+  const raws = readRawLayouts(contentDir);
+  const notes = readNoteLayouts(contentDir, raws, { allowMissing: true, allowStaleLatest: true });
+  const usedNoteIds = new Set([...notes.values()].map((layout) => layout.manifest.note_id));
+  const summary = { created: 0, unchanged: 0, manifests_updated: 0 };
+  for (const [gid, rawLayout] of raws) {
+    const revision = rawLayout.manifest.latest_revision;
+    const raw = rawLayout.revisions.get(revision).raw;
+    let noteLayout = notes.get(gid);
+    let manifest;
+    if (noteLayout) {
+      manifest = { ...noteLayout.manifest, revisions: [...noteLayout.manifest.revisions] };
+    } else {
+      const ordinaryId = noteFilename(raw);
+      const noteId = usedNoteIds.has(ordinaryId) ? noteFilename(raw, true) : ordinaryId;
+      if (usedNoteIds.has(noteId)) throw new Error(`Cannot assign a unique public note ID for ${gid}`);
+      usedNoteIds.add(noteId);
+      manifest = {
+        gid,
+        note_id: noteId,
+        legacy_filename: noteId,
+        latest_revision: revision,
+        revisions: [revision],
+      };
+      noteLayout = { directory: noteRevisionDirectory(contentDir, gid), manifest };
+      fs.mkdirSync(noteLayout.directory);
     }
-
-    const body = generatedBody(raw);
-    const generated = renderNote(raw, body);
+    const target = resolveContainedPath(noteLayout.directory, revisionFilename(revision, "md"));
     if (!fs.existsSync(target)) {
-      fs.writeFileSync(target, generated);
+      fs.writeFileSync(target, renderNote(raw, generatedBody(raw), revision));
       summary.created++;
-      continue;
+    } else {
+      summary.unchanged++;
     }
-
-    const current = parseNote(fs.readFileSync(target, "utf8"));
-    const oldGeneratedHash = current.frontmatter.generated_sha256;
-    const currentHash = current.body === null ? null : sha256(current.body);
-    if (currentHash === oldGeneratedHash) {
-      if (writeIfChanged(target, generated)) {
-        summary.regenerated++;
-      } else {
-        summary.unchanged++;
-      }
-      continue;
+    if (!manifest.revisions.includes(revision)) manifest.revisions.push(revision);
+    if (manifest.latest_revision !== revision || !fs.existsSync(resolveContainedPath(noteLayout.directory, "index.json"))) {
+      manifest.latest_revision = revision;
+      fs.writeFileSync(resolveContainedPath(noteLayout.directory, "index.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+      summary.manifests_updated++;
     }
-
-    const newGeneratedHash = sha256(body);
-    if (newGeneratedHash === oldGeneratedHash) {
-      summary.preserved++;
-      continue;
-    }
-
-    writeIfChanged(`${target}.new`, generated);
-    summary.conflicts.push({ note: target, proposed: `${target}.new` });
   }
-
   return summary;
 }
 
 if (require.main === module) {
   const summary = convertAll();
   console.log(JSON.stringify(summary, null, 2));
-  if (summary.conflicts.length > 0) {
-    console.error("REGEN-REVIEW:");
-    for (const conflict of summary.conflicts) {
-      console.error(`- ${conflict.note} -> ${conflict.proposed}`);
-    }
-    process.exitCode = 1;
-  }
 }
 
 module.exports = {

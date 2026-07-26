@@ -1,44 +1,55 @@
 # Archive Read API
 
-The API reads `CONTENT_DIR/content/notes/*.md` directly and builds a disposable
-in-memory index. It has no database or search-engine dependency.
+The API reads the detached content worktree named by the revision root's active
+marker and builds a disposable in-memory index. It has no database or
+search-engine dependency.
 
 ## Runtime
 
 ```sh
-CONTENT_DIR=/srv/cs-patchnotes-content \
+CONTENT_REVISION_ROOT=/srv/cs-patchnotes-content-revisions \
 RELOAD_TOKEN="${RELOAD_TOKEN:?set a random RELOAD_TOKEN}" \
 PORT=3001 \
 npm run start -w @cs-patchnotes/archive-api
 ```
 
-The containerized equivalent mounts the content checkout read-only at `/content`
-and sets `CONTENT_DIR=/content`.
+The containerized equivalent mounts the revision root read-only at
+`/content-revisions` and sets `CONTENT_REVISION_ROOT=/content-revisions`. Its
+`active` file contains exactly one lowercase, 40-character Git SHA and selects
+`worktrees/<sha>`.
 
 Endpoints:
 
-- `GET /health`
+- `GET /health` (includes the loaded `content_sha`)
 - `GET /api/search?q=&game=&from=&to=`
 - `GET /api/notes/:id`
-- `POST /internal/reload` with `Authorization: Bearer <RELOAD_TOKEN>`
+- `POST /internal/reload` with `Authorization: Bearer <RELOAD_TOKEN>` and JSON
+  body `{ "sha": "<full-content-git-sha>" }`
 
-`/internal/reload` loads and validates a complete replacement index before it
-becomes visible to readers. If validation fails, the current index remains live.
+`/internal/reload` accepts only the full SHA currently named by `active`. It
+loads and validates a complete replacement index before it becomes visible to
+readers. If validation fails, the current index remains live.
 
-## Content refresh
+## Content activation
 
-Keep a normal clone of `cs-patchnotes-content` at `CONTENT_DIR`. A host-side
-refresh job or authenticated webhook handler must pull a reviewed content commit,
-run `npm run verify:corpus` with that checkout, then call `/internal/reload`.
-The content repository contains no deployment code.
+Keep a normal content Git repository separate from the revision root. The
+host-side activation command fetches one reviewed commit, creates or reuses its
+detached candidate, verifies it, atomically publishes the marker, and calls the
+SHA-bound reload. The content repository contains no deployment code.
 
-`tools/refresh-archive-api.cjs` implements that host-side sequence with a
-fast-forward-only pull. Run it where the content checkout is writable and the
-API is reachable:
+`tools/activate-content.cjs` implements that sequence. Run it where the content
+Git repository and revision root are writable and the loopback API is reachable:
 
 ```sh
-CONTENT_DIR=/srv/cs-patchnotes-content \
+CONTENT_SHA=<full-40-character-content-commit-sha> \
+CONTENT_REVISION_ROOT=/srv/cs-patchnotes-content-revisions \
+CONTENT_REPOSITORY_DIR=/srv/cs-patchnotes-content-repo \
 ARCHIVE_API_URL=http://127.0.0.1:3001 \
 RELOAD_TOKEN="${RELOAD_TOKEN:?set RELOAD_TOKEN}" \
-node tools/refresh-archive-api.cjs
+node tools/activate-content.cjs
 ```
+
+Activation serializes itself with a local owner-record lock. It refuses another
+active process and only recovers a lock older than 30 minutes after confirming
+that its same-host owner PID is no longer alive. Other stale records require
+manual inspection rather than automatic removal.

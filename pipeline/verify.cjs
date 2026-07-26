@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 
-const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { auditCorpus, blockingFindings } = require("./audit.cjs");
 const { assertNoSymlinks } = require("./corpus.cjs");
-const { convertAll } = require("./convert.cjs");
 
-const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content");
+const DEFAULT_CONTENT_DIR = path.resolve(__dirname, "..", "..", "cs-patchnotes-content-v2");
 
 function compareFindings(left, right) {
   return left.class.localeCompare(right.class)
@@ -27,40 +24,13 @@ function auditFailures(findings) {
     .map(([findingClass, count]) => `${findingClass} has ${count} finding(s)`);
 }
 
-function emptyConversionSummary() {
-  return { created: 0, regenerated: 0, unchanged: 0, preserved: 0, overridden: 0, conflicts: [] };
-}
-
 function verifyCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR, options = {}) {
   const auditCorpusCopy = options.audit || auditCorpus;
-  const temporaryDir = fs.mkdtempSync(path.join(os.tmpdir(), "cs-patchnotes-verify-"));
-  const copiedContentDir = path.join(temporaryDir, "content");
-  try {
-    assertNoSymlinks(contentDir);
-    fs.cpSync(contentDir, copiedContentDir, { recursive: true });
-    const preConversionAudit = auditCorpusCopy(copiedContentDir);
-    const preConversionFindings = blockingFindings(preConversionAudit);
-    if (preConversionFindings.length > 0) {
-      return {
-        ok: false,
-        failures: auditFailures(preConversionFindings),
-        conversion: emptyConversionSummary(),
-        audit: preConversionAudit,
-        blocking_findings: preConversionFindings,
-      };
-    }
-    const conversion = convertAll(copiedContentDir);
-    const audit = auditCorpusCopy(copiedContentDir);
-    const blocking_findings = blockingFindings(audit);
-    const failures = [];
-    if (conversion.created || conversion.regenerated || conversion.overridden || conversion.conflicts.length) {
-      failures.push("generated Markdown is not current with the converter");
-    }
-    failures.push(...auditFailures(blocking_findings));
-    return { ok: failures.length === 0, failures, conversion, audit, blocking_findings };
-  } finally {
-    fs.rmSync(temporaryDir, { recursive: true, force: true });
-  }
+  assertNoSymlinks(contentDir);
+  const audit = auditCorpusCopy(contentDir);
+  const blocking_findings = blockingFindings(audit);
+  const failures = auditFailures(blocking_findings);
+  return { ok: failures.length === 0, failures, audit, blocking_findings };
 }
 
 function formatVerificationResult(result) {
@@ -72,7 +42,6 @@ function formatVerificationResult(result) {
     ok: result.ok,
     failures: result.failures,
     documents: result.audit.documents,
-    conversion: result.conversion,
     blocking_class_counts: findingClassCounts(result.blocking_findings),
     blocking_findings: [...result.blocking_findings].sort(compareFindings),
     informational_findings: informational,
