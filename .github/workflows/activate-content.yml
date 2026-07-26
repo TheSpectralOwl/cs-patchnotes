@@ -47,6 +47,14 @@ jobs:
             set -euo pipefail
             archive_dir="$HOME/cs-patchnotes-archive"
             test -f "$archive_dir/.env"
+            if ! command -v node >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then
+              # SSH actions use a non-interactive shell, which does not load nvm automatically.
+              . "$HOME/.nvm/nvm.sh"
+            fi
+            command -v node >/dev/null 2>&1 || {
+              echo "Node.js is unavailable to the deployment user. Install Node 22 system-wide or configure nvm at ~/.nvm/nvm.sh." >&2
+              exit 127
+            }
             cd "$archive_dir"
             CONTENT_SHA='${{ needs.validate.outputs.sha }}' \
             CONTENT_REVISION_ROOT="$HOME/cs-patchnotes-content-revisions" \
