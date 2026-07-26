@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { remark } from "remark";
 
 export type Game = "csgo" | "cs2";
@@ -13,6 +13,7 @@ export type Note = {
   steam_gid: string;
   source_url: string;
   source_sha256: string;
+  source_revision: string;
   body: string;
   duplicate_of?: string;
 };
@@ -94,6 +95,7 @@ function validatedNote(id: string, frontmatter: Record<string, unknown>, body: s
     steam_gid: requiredFrontmatterString(frontmatter, "steam_gid", id),
     source_url: requiredFrontmatterString(frontmatter, "source_url", id),
     source_sha256: requiredFrontmatterString(frontmatter, "source_sha256", id),
+    source_revision: requiredFrontmatterString(frontmatter, "source_revision", id),
     body,
   };
 }
@@ -223,26 +225,224 @@ export function noteBodySha256(note: Pick<Note, "body">) {
   return createHash("sha256").update(note.body).digest("hex");
 }
 
-export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(process.cwd(), "..", "cs-patchnotes-content")): CorpusIndex {
-  const notesDir = join(contentDir, "content", "notes");
-  const notes = readdirSync(notesDir)
-    .filter((filename) => filename.endsWith(".md"))
-    .sort()
-    .map((id) => {
-      const { frontmatter, body } = parseFrontmatter(readFileSync(join(notesDir, id), "utf8"));
-      const note = validatedNote(id, frontmatter, body);
-      const generatedHash = frontmatter.generated_sha256;
-      verifyGeneratedBody(note, typeof generatedHash === "string" ? generatedHash : undefined);
-      return note;
-    });
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
+const STEAM_GID_PATTERN = /^[0-9]+$/;
+
+type RawRecord = {
+  gid: string;
+  title: string;
+  date: string;
+  game: Game;
+  content_kind: "patch_notes";
+  body_format: "bbcode" | "plain_text";
+  source_url: string;
+  body: string;
+  body_sha256: string;
+};
+
+type RevisionManifest = {
+  gid: string;
+  latest_revision: string;
+  revisions: string[];
+  note_id?: string;
+  legacy_filename?: string;
+  legacy_migration_revisions?: string[];
+  override_revision?: string;
+};
+
+type RawLayout = {
+  manifest: RevisionManifest;
+  revisions: Map<string, RawRecord>;
+};
+
+function sha256(value: string | Buffer) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function containedPath(root: string, relativePath: string) {
+  const resolvedRoot = resolve(root);
+  const filename = resolve(resolvedRoot, relativePath);
+  const pathFromRoot = relative(resolvedRoot, filename);
+  if (!pathFromRoot || pathFromRoot === ".." || pathFromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(pathFromRoot)) {
+    throw new Error(`Path escapes its containing directory: ${relativePath}`);
+  }
+  return filename;
+}
+
+function readDirectory(directory: string, label: string, optional = false) {
+  if (!existsSync(directory)) {
+    if (optional) return [];
+    throw new Error(`${label} directory is missing`);
+  }
+  const stat = lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`${label} is not a directory`);
+  return readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function assertNoSymlinks(root: string) {
+  const stat = lstatSync(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Candidate corpus is not a directory: ${root}`);
+  for (const entry of readDirectory(root, "Candidate corpus")) {
+    const filename = join(root, entry.name);
+    const child = lstatSync(filename);
+    if (child.isSymbolicLink()) throw new Error(`Candidate corpus contains a symlink: ${filename}`);
+    if (child.isDirectory()) assertNoSymlinks(filename);
+    else if (!child.isFile()) throw new Error(`Candidate corpus contains an unsupported filesystem entry: ${filename}`);
+  }
+}
+
+function readJson(filename: string, label: string) {
+  try {
+    const value: unknown = JSON.parse(readFileSync(filename, "utf8"));
+    if (!isObject(value)) throw new Error("must be an object");
+    return value;
+  } catch (error) {
+    throw new Error(`${label} is invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function assertManifest(value: Record<string, unknown>, gid: string, kind: string): RevisionManifest {
+  const revisions = value.revisions;
+  if (value.gid !== gid) throw new Error(`${kind} manifest gid does not match its directory: ${gid}`);
+  if (!Array.isArray(revisions) || revisions.length === 0 || new Set(revisions).size !== revisions.length || !revisions.every((revision) => typeof revision === "string" && SHA256_PATTERN.test(revision))) {
+    throw new Error(`${kind} manifest for ${gid} has invalid revisions`);
+  }
+  if (typeof value.latest_revision !== "string" || !SHA256_PATTERN.test(value.latest_revision) || !revisions.includes(value.latest_revision)) {
+    throw new Error(`${kind} manifest for ${gid} has an invalid latest_revision`);
+  }
+  return {
+    gid,
+    latest_revision: value.latest_revision,
+    revisions,
+    ...(typeof value.note_id === "string" ? { note_id: value.note_id } : {}),
+    ...(typeof value.legacy_filename === "string" ? { legacy_filename: value.legacy_filename } : {}),
+    ...(Array.isArray(value.legacy_migration_revisions) ? { legacy_migration_revisions: value.legacy_migration_revisions as string[] } : {}),
+    ...(typeof value.override_revision === "string" ? { override_revision: value.override_revision } : {}),
+  };
+}
+
+function isCanonicalDate(value: unknown) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  return month >= 1 && month <= 12 && day >= 1 && day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function validatedRawRecord(value: Record<string, unknown>, gid: string, label: string): RawRecord {
+  const required = ["gid", "title", "game", "content_kind", "body_format", "source_url", "body", "body_sha256"] as const;
+  if (required.some((field) => typeof value[field] !== "string" || value[field].length === 0) || !isCanonicalDate(value.date)) {
+    throw new Error(`${label} is malformed`);
+  }
+  const raw = value as RawRecord;
+  if (raw.gid !== gid || (raw.game !== "csgo" && raw.game !== "cs2") || raw.content_kind !== "patch_notes" || (raw.body_format !== "bbcode" && raw.body_format !== "plain_text") || !SHA256_PATTERN.test(raw.body_sha256) || sha256(raw.body) !== raw.body_sha256) {
+    throw new Error(`${label} is invalid`);
+  }
+  return raw;
+}
+
+function assertPublicNoteId(noteId: string | undefined, gid: string) {
+  if (!noteId || !noteId.endsWith(".md") || noteId !== noteId.split(/[\\/]/).pop()) {
+    throw new Error(`Note manifest note_id for ${gid} must be a Markdown filename`);
+  }
+  return noteId;
+}
+
+function verifyNoteEvidence(id: string, contents: string, raw: RawRecord, gid: string, revision: string, legacyRevisions: string[]) {
+  const { frontmatter, body } = parseFrontmatter(contents);
+  if (frontmatter.source_revision === undefined && legacyRevisions.includes(revision)) frontmatter.source_revision = revision;
+  const note = validatedNote(id, frontmatter, body);
+  verifyGeneratedBody(note, typeof frontmatter.generated_sha256 === "string" ? frontmatter.generated_sha256 : undefined);
+  if (note.steam_gid !== gid || note.source_sha256 !== raw.body_sha256 || note.source_revision !== revision
+    || note.title !== raw.title || note.date !== raw.date || note.game !== raw.game || note.source_url !== raw.source_url
+    || frontmatter.content_kind !== raw.content_kind || frontmatter.body_format !== raw.body_format) {
+    throw new Error(`${id} provenance does not match raw revision ${gid}/${revision}`);
+  }
+  return note;
+}
+
+export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(process.cwd(), "..", "cs-patchnotes-content-v2")): CorpusIndex {
+  assertNoSymlinks(contentDir);
+  const rawRoot = join(contentDir, "raw", "steam");
+  const rawLayouts = new Map<string, RawLayout>();
+  for (const entry of readDirectory(rawRoot, "Raw Steam", true)) {
+    if (!entry.isDirectory() || !STEAM_GID_PATTERN.test(entry.name)) throw new Error(`Invalid raw Steam layout entry: ${entry.name}`);
+    const gid = entry.name;
+    const directory = containedPath(rawRoot, gid);
+    const entries = readDirectory(directory, `Raw revision ${gid}`);
+    if (entries.some((child) => !child.isFile() || (child.name !== "index.json" && !new RegExp(`^${SHA256_PATTERN.source.slice(1, -1)}\\.json$`).test(child.name)))) throw new Error(`Invalid raw revision layout for ${gid}`);
+    const manifest = assertManifest(readJson(containedPath(directory, "index.json"), `Raw manifest for ${gid}`), gid, "Raw");
+    const filenames = entries.filter((child) => child.name.endsWith(".json") && child.name !== "index.json").map((child) => child.name.slice(0, -5));
+    if (filenames.length !== manifest.revisions.length || filenames.some((revision) => !manifest.revisions.includes(revision))) throw new Error(`Raw manifest for ${gid} does not match its revision files`);
+    const revisions = new Map<string, RawRecord>();
+    for (const revision of manifest.revisions) {
+      const filename = containedPath(directory, `${revision}.json`);
+      const bytes = readFileSync(filename);
+      if (sha256(bytes) !== revision) throw new Error(`Raw revision ${gid}/${revision} does not match its filename hash`);
+      revisions.set(revision, validatedRawRecord(readJson(filename, `Raw revision ${gid}/${revision}`), gid, `Raw revision ${gid}/${revision}`));
+    }
+    rawLayouts.set(gid, { manifest, revisions });
+  }
+
+  const notesRoot = join(contentDir, "content", "notes");
+  const notes: Note[] = [];
+  const noteIds = new Set<string>();
+  const noteLayouts = new Map<string, RevisionManifest>();
+  for (const entry of readDirectory(notesRoot, "Note", true)) {
+    if (!entry.isDirectory() || !STEAM_GID_PATTERN.test(entry.name)) throw new Error(`Invalid note layout entry: ${entry.name}`);
+    const gid = entry.name;
+    const rawLayout = rawLayouts.get(gid);
+    if (!rawLayout) throw new Error(`Note revisions for ${gid} have no raw source`);
+    const directory = containedPath(notesRoot, gid);
+    const entries = readDirectory(directory, `Note revision ${gid}`);
+    if (entries.some((child) => !child.isFile() || (child.name !== "index.json" && !new RegExp(`^${SHA256_PATTERN.source.slice(1, -1)}\\.md$`).test(child.name)))) throw new Error(`Invalid note revision layout for ${gid}`);
+    const manifest = assertManifest(readJson(containedPath(directory, "index.json"), `Note manifest for ${gid}`), gid, "Note");
+    const noteId = assertPublicNoteId(manifest.note_id, gid);
+    if (manifest.legacy_filename !== noteId || manifest.latest_revision !== rawLayout.manifest.latest_revision || !manifest.revisions.every((revision) => rawLayout.revisions.has(revision))) throw new Error(`Note manifest for ${gid} does not match its source evidence`);
+    if (manifest.legacy_migration_revisions && (!manifest.legacy_migration_revisions.every((revision) => manifest.revisions.includes(revision)))) throw new Error(`Note manifest for ${gid} has invalid legacy migration revisions`);
+    if (manifest.override_revision !== undefined && !rawLayout.revisions.has(manifest.override_revision)) throw new Error(`Note manifest for ${gid} has an invalid override revision`);
+    const filenames = entries.filter((child) => child.name.endsWith(".md") && child.name !== "index.json").map((child) => child.name.slice(0, -3));
+    if (filenames.length !== manifest.revisions.length || filenames.some((revision) => !manifest.revisions.includes(revision))) throw new Error(`Note manifest for ${gid} does not match its revision files`);
+    if (noteIds.has(noteId)) throw new Error(`More than one GID claims public note ID: ${noteId}`);
+    noteIds.add(noteId);
+    for (const revision of manifest.revisions) {
+      verifyNoteEvidence(noteId, readFileSync(containedPath(directory, `${revision}.md`), "utf8"), rawLayout.revisions.get(revision)!, gid, revision, manifest.legacy_migration_revisions ?? []);
+    }
+    noteLayouts.set(gid, manifest);
+  }
+  if (noteLayouts.size !== rawLayouts.size) {
+    for (const gid of rawLayouts.keys()) if (!noteLayouts.has(gid)) throw new Error(`Raw revision ${gid} has no note manifest`);
+  }
+
+  const overridesRoot = join(contentDir, "overrides");
+  const overrides = new Map<string, Note>();
+  for (const entry of readDirectory(overridesRoot, "Override", true)) {
+    const gid = entry.name.endsWith(".md") ? entry.name.slice(0, -3) : "";
+    const rawLayout = rawLayouts.get(gid);
+    const manifest = noteLayouts.get(gid);
+    if (!entry.isFile() || !STEAM_GID_PATTERN.test(gid) || !rawLayout || !manifest?.override_revision) throw new Error(`Override ${entry.name} is not mapped by a note manifest`);
+    overrides.set(gid, verifyNoteEvidence(manifest.note_id!, readFileSync(containedPath(overridesRoot, entry.name), "utf8"), rawLayout.revisions.get(manifest.override_revision)!, gid, manifest.override_revision, manifest.legacy_migration_revisions ?? []));
+  }
+  for (const [gid, manifest] of noteLayouts) {
+    if (manifest.override_revision !== undefined && !overrides.has(gid)) throw new Error(`Note manifest for ${gid} selects a missing override`);
+    const rawLayout = rawLayouts.get(gid)!;
+    const effective = manifest.override_revision === rawLayout.manifest.latest_revision
+      ? overrides.get(gid)!
+      : verifyNoteEvidence(manifest.note_id!, readFileSync(containedPath(join(notesRoot, gid), `${rawLayout.manifest.latest_revision}.md`), "utf8"), rawLayout.revisions.get(rawLayout.manifest.latest_revision)!, gid, rawLayout.manifest.latest_revision, manifest.legacy_migration_revisions ?? []);
+    notes.push(effective);
+  }
 
   const canonicalByHash = new Map<string, Note>();
   for (const note of notes) {
-    const canonical = canonicalByHash.get(note.source_sha256);
-    if (!canonical || compareDecimalIdentifiers(note.steam_gid, canonical.steam_gid) < 0) canonicalByHash.set(note.source_sha256, note);
+    const hash = noteBodySha256(note);
+    const canonical = canonicalByHash.get(hash);
+    if (!canonical || compareDecimalIdentifiers(note.steam_gid, canonical.steam_gid) < 0) canonicalByHash.set(hash, note);
   }
   for (const note of notes) {
-    const canonical = canonicalByHash.get(note.source_sha256);
+    const canonical = canonicalByHash.get(noteBodySha256(note));
     if (canonical && canonical.id !== note.id) note.duplicate_of = canonical.id;
   }
 
@@ -258,6 +458,25 @@ export function loadCorpus(contentDir = process.env.CONTENT_DIR ?? resolve(proce
     for (const [token, count] of frequencies) terms.set(token, [...(terms.get(token) ?? []), [noteIndex, count]]);
   });
   return { notes, terms, contexts };
+}
+
+function activeContentDirectory(revisionRoot: string) {
+  const marker = join(revisionRoot, "active");
+  let sha: string;
+  try {
+    const markerStat = lstatSync(marker);
+    if (!markerStat.isFile() || markerStat.isSymbolicLink()) throw new Error("not a regular file");
+    sha = readFileSync(marker, "utf8").trim();
+  } catch {
+    throw new Error(`Active content marker is missing: ${marker}`);
+  }
+  if (!GIT_SHA_PATTERN.test(sha)) throw new Error("Active content marker must contain one full lowercase Git SHA");
+  const worktrees = join(revisionRoot, "worktrees");
+  const contentDir = containedPath(worktrees, sha);
+  if (!existsSync(contentDir) || !lstatSync(contentDir).isDirectory() || lstatSync(contentDir).isSymbolicLink()) {
+    throw new Error(`Active content worktree is unavailable for ${sha}`);
+  }
+  return { sha, contentDir };
 }
 
 function matchesTokens(markdown: string, queryTokens: string[]) {
@@ -348,15 +567,22 @@ export function searchCorpus(index: CorpusIndex, query: string, filters: { game?
 
 export class CorpusStore {
   #index: CorpusIndex;
+  #activeSha: string;
 
-  constructor(private readonly contentDir?: string) {
-    this.#index = loadCorpus(contentDir);
+  constructor(private readonly revisionRoot = process.env.CONTENT_REVISION_ROOT ?? resolve(process.cwd(), "..", "cs-patchnotes-content-revisions")) {
+    const active = activeContentDirectory(revisionRoot);
+    this.#index = loadCorpus(active.contentDir);
+    this.#activeSha = active.sha;
   }
 
-  reload() {
-    const next = loadCorpus(this.contentDir);
+  reload(expectedSha: string) {
+    if (!GIT_SHA_PATTERN.test(expectedSha)) throw new Error("Reload requires one full lowercase Git SHA");
+    const active = activeContentDirectory(this.revisionRoot);
+    if (active.sha !== expectedSha) throw new Error(`Active content SHA does not match requested reload SHA: ${expectedSha}`);
+    const next = loadCorpus(active.contentDir);
     this.#index = next;
-    return { notes: next.notes.length, terms: next.terms.size };
+    this.#activeSha = active.sha;
+    return { notes: next.notes.length, terms: next.terms.size, content_sha: this.#activeSha };
   }
 
   search(query: string, filters: { game?: Game; from?: string; to?: string }) {
@@ -373,5 +599,9 @@ export class CorpusStore {
 
   stats() {
     return { notes: this.#index.notes.length, visible_notes: this.#index.notes.filter((note) => !note.duplicate_of).length };
+  }
+
+  activeSha() {
+    return this.#activeSha;
   }
 }

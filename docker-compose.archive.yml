@@ -7,11 +7,13 @@ services:
       context: .
       dockerfile: packages/archive-api/Dockerfile
     environment:
-      CONTENT_DIR: /content
+      CONTENT_REVISION_ROOT: /content-revisions
       PORT: 3001
       RELOAD_TOKEN: ${RELOAD_TOKEN:?set RELOAD_TOKEN in .env}
     volumes:
-      - ${CONTENT_HOST_DIR:?set CONTENT_HOST_DIR to the content checkout}:/content:ro
+      - ${CONTENT_REVISION_ROOT:?set CONTENT_REVISION_ROOT to the host revision root}:/content-revisions:ro
+    ports:
+      - "127.0.0.1:3001:3001"
     networks: [internal]
     restart: unless-stopped
 

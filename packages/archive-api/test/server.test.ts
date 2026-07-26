@@ -1,11 +1,25 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildServer } from "../src/server.js";
 
 const apps: ReturnType<typeof buildServer>[] = [];
+const FIXTURE_SHA = "a".repeat(40);
+
+function activeCorpusDir(revisionRoot: string) {
+  return join(revisionRoot, "worktrees", FIXTURE_SHA);
+}
+
+function reload(app: ReturnType<typeof buildServer>) {
+  return app.inject({
+    method: "POST",
+    url: "/internal/reload",
+    headers: { authorization: "Bearer secret", "content-type": "application/json" },
+    payload: { sha: FIXTURE_SHA },
+  });
+}
 
 type NoteFixture = {
   filename: string;
@@ -26,8 +40,39 @@ function writeNote(contentDir: string, {
   title = "Counter-Strike 2 Update",
   date = "2024-01-01",
 }: NoteFixture) {
-  const hash = createHash("sha256").update(body).digest("hex");
-  writeFileSync(join(contentDir, "content", "notes", filename), `---\ntitle: ${JSON.stringify(title)}\ndate: ${date}\ngame: ${JSON.stringify(game)}\nsteam_gid: "${steamGid}"\nsource_url: "https://example.test/${steamGid}"\nsource_sha256: "${sourceHash}"\ngenerated_sha256: "${hash}"\n---\n${body}`);
+  contentDir = activeCorpusDir(contentDir);
+  const rawDir = join(contentDir, "raw", "steam", steamGid);
+  const notesDir = join(contentDir, "content", "notes", steamGid);
+  rmSync(rawDir, { recursive: true, force: true });
+  rmSync(notesDir, { recursive: true, force: true });
+  mkdirSync(rawDir, { recursive: true });
+  mkdirSync(notesDir, { recursive: true });
+  const raw = {
+    gid: steamGid,
+    title,
+    date,
+    game,
+    content_kind: "patch_notes",
+    body_format: "plain_text",
+    source_url: `https://example.test/${steamGid}`,
+    body,
+    body_sha256: createHash("sha256").update(body).digest("hex"),
+  };
+  const rawContents = `${JSON.stringify(raw, null, 2)}\n`;
+  const revision = createHash("sha256").update(rawContents).digest("hex");
+  const markdown = `---\ntitle: ${JSON.stringify(title)}\ndate: ${date}\ngame: ${JSON.stringify(game)}\ncontent_kind: "patch_notes"\nbody_format: "plain_text"\nsteam_gid: "${steamGid}"\nsource_url: "https://example.test/${steamGid}"\nsource_sha256: "${raw.body_sha256}"\nsource_revision: "${revision}"\ngenerated_sha256: "${createHash("sha256").update(body).digest("hex")}"\n---\n${body}`;
+  writeFileSync(join(rawDir, `${revision}.json`), rawContents);
+  writeFileSync(join(rawDir, "index.json"), `${JSON.stringify({ gid: steamGid, latest_revision: revision, revisions: [revision] }, null, 2)}\n`);
+  writeFileSync(join(notesDir, `${revision}.md`), markdown);
+  writeFileSync(join(notesDir, "index.json"), `${JSON.stringify({
+    gid: steamGid,
+    note_id: filename,
+    legacy_filename: filename,
+    latest_revision: revision,
+    revisions: [revision],
+    legacy_migration_revisions: [],
+  }, null, 2)}\n`);
+  return { markdown, revision, sourceHash };
 }
 
 function contentFixture(notes: NoteFixture[] = [{
@@ -37,10 +82,72 @@ function contentFixture(notes: NoteFixture[] = [{
   body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Updated smoke behavior.\n",
 }]) {
   const contentDir = mkdtempSync(join(tmpdir(), "cs-patchnotes-api-"));
-  const notesDir = join(contentDir, "content", "notes");
-  mkdirSync(notesDir, { recursive: true });
+  const corpusDir = activeCorpusDir(contentDir);
+  mkdirSync(join(corpusDir, "raw", "steam"), { recursive: true });
+  mkdirSync(join(corpusDir, "content", "notes"), { recursive: true });
+  writeFileSync(join(contentDir, "active"), `${FIXTURE_SHA}\n`);
   notes.forEach((note) => writeNote(contentDir, note));
   return contentDir;
+}
+
+function writeHistory(contentDir: string, options: {
+  gid: string;
+  noteId: string;
+  bodies: string[];
+  latest: number;
+  override?: number;
+  title?: string;
+  date?: string;
+}) {
+  contentDir = activeCorpusDir(contentDir);
+  const { gid, noteId, bodies, latest, override, title = "Counter-Strike 2 Update", date = "2024-01-01" } = options;
+  const rawDir = join(contentDir, "raw", "steam", gid);
+  const notesDir = join(contentDir, "content", "notes", gid);
+  rmSync(rawDir, { recursive: true, force: true });
+  rmSync(notesDir, { recursive: true, force: true });
+  mkdirSync(rawDir, { recursive: true });
+  mkdirSync(notesDir, { recursive: true });
+
+  const revisions = bodies.map((body) => {
+    const raw = {
+      gid,
+      title,
+      date,
+      game: "cs2",
+      content_kind: "patch_notes",
+      body_format: "plain_text",
+      source_url: `https://example.test/${gid}`,
+      body,
+      body_sha256: createHash("sha256").update(body).digest("hex"),
+    };
+    const rawContents = `${JSON.stringify(raw, null, 2)}\n`;
+    const revision = createHash("sha256").update(rawContents).digest("hex");
+    const markdown = `---\ntitle: ${JSON.stringify(title)}\ndate: ${date}\ngame: "cs2"\ncontent_kind: "patch_notes"\nbody_format: "plain_text"\nsteam_gid: "${gid}"\nsource_url: "https://example.test/${gid}"\nsource_sha256: "${raw.body_sha256}"\nsource_revision: "${revision}"\ngenerated_sha256: "${createHash("sha256").update(body).digest("hex")}"\n---\n${body}`;
+    writeFileSync(join(rawDir, `${revision}.json`), rawContents);
+    writeFileSync(join(notesDir, `${revision}.md`), markdown);
+    return { revision, markdown };
+  });
+  writeFileSync(join(rawDir, "index.json"), `${JSON.stringify({
+    gid,
+    latest_revision: revisions[latest].revision,
+    revisions: revisions.map(({ revision }) => revision),
+  }, null, 2)}\n`);
+  writeFileSync(join(notesDir, "index.json"), `${JSON.stringify({
+    gid,
+    note_id: noteId,
+    legacy_filename: noteId,
+    latest_revision: revisions[latest].revision,
+    revisions: revisions.map(({ revision }) => revision),
+    legacy_migration_revisions: [],
+    ...(override === undefined ? {} : { override_revision: revisions[override].revision }),
+  }, null, 2)}\n`);
+  const overridePath = join(contentDir, "overrides", `${gid}.md`);
+  if (override === undefined) rmSync(overridePath, { force: true });
+  else {
+    mkdirSync(join(contentDir, "overrides"), { recursive: true });
+    writeFileSync(overridePath, revisions[override].markdown);
+  }
+  return revisions;
 }
 
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -286,7 +393,25 @@ describe("archive API", () => {
     const app = buildServer({ contentDir: contentFixture(), reloadToken: "secret" });
     apps.push(app);
     expect((await app.inject({ method: "POST", url: "/internal/reload" })).statusCode).toBe(404);
-    expect((await app.inject({ method: "POST", url: "/internal/reload", headers: { authorization: "Bearer secret" } })).statusCode).toBe(200);
+    expect((await reload(app)).statusCode).toBe(200);
+  });
+
+  it("reports the selected full content SHA and only reloads that SHA", async () => {
+    const app = buildServer({ contentRevisionRoot: contentFixture(), reloadToken: "secret" });
+    apps.push(app);
+    expect((await app.inject("/health")).json()).toMatchObject({ ok: true, content_sha: FIXTURE_SHA });
+    expect((await app.inject({
+      method: "POST",
+      url: "/internal/reload",
+      headers: { authorization: "Bearer secret", "content-type": "application/json" },
+      payload: { sha: "b".repeat(40) },
+    })).statusCode).toBe(409);
+    expect((await app.inject({
+      method: "POST",
+      url: "/internal/reload",
+      headers: { authorization: "Bearer secret", "content-type": "application/json" },
+      payload: { sha: "short" },
+    })).statusCode).toBe(400);
   });
 
   it("rejects a body fetch whose search-result digest became stale after a reload", async () => {
@@ -307,7 +432,7 @@ describe("archive API", () => {
       sourceHash: "versioned-source",
       body: newBody,
     });
-    expect((await app.inject({ method: "POST", url: "/internal/reload", headers: { authorization: "Bearer secret" } })).statusCode).toBe(200);
+    expect((await reload(app)).statusCode).toBe(200);
 
     const staleBody = await app.inject(`/api/notes/${staleHit.id}?body_sha256=${staleHit.body_sha256}`);
     expect(staleBody.statusCode).toBe(409);
@@ -319,15 +444,89 @@ describe("archive API", () => {
     expect(currentBody.json()).toMatchObject({ body: newBody });
   });
 
+  it("indexes only the latest source revision under the stable legacy public ID", async () => {
+    const contentDir = contentFixture([]);
+    const revisions = writeHistory(contentDir, {
+      gid: "42",
+      noteId: "2024-01-01-stable-id.md",
+      bodies: [
+        "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Original smoke behavior.\n",
+        "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Revised smoke behavior.\n",
+      ],
+      latest: 1,
+    });
+    const app = buildServer({ contentDir, reloadToken: "secret" });
+    apps.push(app);
+
+    const hit = (await app.inject("/api/search?q=revised")).json().hits[0];
+    expect(hit).toMatchObject({ id: "2024-01-01-stable-id.md" });
+    expect((await app.inject(`/api/notes/${hit.id}`)).json()).toMatchObject({
+      id: "2024-01-01-stable-id.md",
+      source_revision: revisions[1].revision,
+      body: expect.stringContaining("Revised smoke behavior"),
+    });
+    expect((await app.inject(`/api/notes/${revisions[0].revision}.md`)).statusCode).toBe(404);
+  });
+
+  it("follows A to B to A source state changes without exposing historical routes", async () => {
+    const contentDir = contentFixture([]);
+    const bodies = [
+      "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Alpha smoke behavior.\n",
+      "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Bravo smoke behavior.\n",
+    ];
+    writeHistory(contentDir, { gid: "7", noteId: "2024-01-01-history.md", bodies, latest: 0 });
+    const app = buildServer({ contentDir, reloadToken: "secret" });
+    apps.push(app);
+
+    expect((await app.inject("/api/search?q=alpha")).json().hits).toHaveLength(1);
+    writeHistory(contentDir, { gid: "7", noteId: "2024-01-01-history.md", bodies, latest: 1 });
+    expect((await reload(app)).statusCode).toBe(200);
+    expect((await app.inject("/api/search?q=bravo")).json().hits).toHaveLength(1);
+    expect((await app.inject("/api/search?q=alpha")).json().hits).toHaveLength(0);
+    writeHistory(contentDir, { gid: "7", noteId: "2024-01-01-history.md", bodies, latest: 0 });
+    expect((await reload(app)).statusCode).toBe(200);
+    expect((await app.inject("/api/search?q=alpha")).json().hits).toHaveLength(1);
+    expect((await app.inject("/api/search?q=bravo")).json().hits).toHaveLength(0);
+  });
+
+  it("uses an override only while its evidence revision remains selected", async () => {
+    const contentDir = contentFixture([]);
+    const options = {
+      gid: "9",
+      noteId: "2024-01-01-override.md",
+      bodies: [
+        "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Curated smoke wording.\n",
+        "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Latest source smoke wording.\n",
+      ],
+      override: 0,
+    };
+    writeHistory(contentDir, { ...options, latest: 0 });
+    const app = buildServer({ contentDir, reloadToken: "secret" });
+    apps.push(app);
+
+    expect((await app.inject("/api/search?q=curated")).json().hits).toHaveLength(1);
+    writeHistory(contentDir, { ...options, latest: 1 });
+    expect((await reload(app)).statusCode).toBe(200);
+    expect((await app.inject("/api/search?q=latest")).json().hits).toHaveLength(1);
+    expect((await app.inject("/api/search?q=curated")).json().hits).toHaveLength(0);
+    expect((await app.inject("/api/notes/2024-01-01-override.md")).json()).toMatchObject({ body: expect.stringContaining("Latest source smoke wording") });
+    writeHistory(contentDir, { ...options, latest: 0 });
+    expect((await reload(app)).statusCode).toBe(200);
+    expect((await app.inject("/api/search?q=curated")).json().hits).toHaveLength(1);
+  });
+
   it("rejects an unsupported game value in frontmatter at runtime", () => {
+    const contentDir = contentFixture([]);
+    const { revision } = writeNote(contentDir, {
+      filename: "2024-01-01-invalid.md",
+      steamGid: "1",
+      sourceHash: "source",
+      body: "# Counter-Strike 2 Update\n",
+    });
+    const filename = join(activeCorpusDir(contentDir), "content", "notes", "1", `${revision}.md`);
+    writeFileSync(filename, readFileSync(filename, "utf8").replace('game: "cs2"', 'game: "cs1"'));
     expect(() => buildServer({
-      contentDir: contentFixture([{
-        filename: "2024-01-01-invalid.md",
-        steamGid: "1",
-        sourceHash: "source",
-        body: "# Counter-Strike 2 Update\n",
-        game: "cs1",
-      }]),
+      contentDir,
     })).toThrow(/invalid game frontmatter/);
   });
 
@@ -351,7 +550,12 @@ describe("archive API", () => {
 
     const duplicate = await app.inject(`/api/notes/${duplicateId}`);
     expect(duplicate.statusCode).toBe(200);
-    expect(duplicate.json()).toMatchObject({ id: canonicalId, steam_gid: "2", source_sha256: "duplicate-source", body });
+    expect(duplicate.json()).toMatchObject({
+      id: canonicalId,
+      steam_gid: "2",
+      source_sha256: createHash("sha256").update(body).digest("hex"),
+      body,
+    });
   });
 
   it("rejects headingless source candidates before an atomic reload can replace the serving index", async () => {
@@ -370,10 +574,31 @@ describe("archive API", () => {
       body: "This searchable text has no authored heading.\n",
     });
 
-    expect((await app.inject({ method: "POST", url: "/internal/reload", headers: { authorization: "Bearer secret" } })).statusCode).toBe(500);
+    expect((await reload(app)).statusCode).toBe(500);
     expect((await app.inject("/api/search?q=smoke")).json().hits).toEqual([
       expect.objectContaining({ sections: [{ heading: "Gameplay", items: expect.any(Array) }] }),
     ]);
+  });
+
+  it("preserves the serving index when a reloaded revision manifest is invalid", async () => {
+    const contentDir = contentFixture([{
+      filename: "2024-01-01-invalid-manifest.md",
+      steamGid: "33",
+      sourceHash: "invalid-manifest-source",
+      body: "# Counter-Strike 2 Update\n\n## Gameplay\n\n- Existing smoke behavior.\n",
+    }]);
+    const app = buildServer({ contentDir, reloadToken: "secret" });
+    apps.push(app);
+    writeFileSync(join(activeCorpusDir(contentDir), "content", "notes", "33", "index.json"), JSON.stringify({
+      gid: "33",
+      note_id: "2024-01-01-invalid-manifest.md",
+      legacy_filename: "2024-01-01-invalid-manifest.md",
+      latest_revision: "not-a-revision",
+      revisions: [],
+    }));
+
+    expect((await reload(app)).statusCode).toBe(500);
+    expect((await app.inject("/api/search?q=existing")).json().hits).toHaveLength(1);
   });
 
   it("rejects bodies over the one MiB parser ceiling", () => {
