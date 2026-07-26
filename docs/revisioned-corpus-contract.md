@@ -20,12 +20,11 @@ This is the layout consumed by the archive API and the corpus pipeline.
   `content/notes/<gid>/<revision>.md`; the revision is the raw evidence
   revision, not a Markdown hash.
 - The selected source is the raw manifest's `latest_revision`.
-- An explicit override for that revision takes precedence over generated
-  Markdown. The note manifest records that selection in `override_revision`.
-  An override for any other revision has no effect on the selected note.
-- When Steam advances to or reselects a different `latest_revision`, generated
-  Markdown for that selected revision becomes effective. A historical override
-  remains evidence only until that exact revision is selected again.
+- An explicit override takes precedence over generated Markdown for its GID,
+  even when later source revisions are captured. The note manifest records the
+  immutable source evidence it cites in `override_revision`.
+- Removing the override deliberately returns presentation to the selected
+  source revision's generated Markdown.
 - During legacy migration, an eligible override remains byte-for-byte at
   `overrides/<gid>.md`; its note manifest records the matching raw revision in
   `override_revision`. The migration refuses an override whose provenance is

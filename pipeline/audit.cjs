@@ -92,7 +92,7 @@ function auditCorpus(contentDir = process.env.CONTENT_DIR || DEFAULT_CONTENT_DIR
       if (issue) findings.push(createFinding("invalid_note_evidence", { filename, steam_gid: gid, detail: issue }));
     }
     const selected = rawLayout.manifest.latest_revision;
-    if (!manifest.revisions.includes(selected) && manifest.override_revision !== selected) {
+    if (!manifest.revisions.includes(selected) && manifest.override_revision === undefined) {
       findings.push(createFinding("missing_presentation", { steam_gid: gid }));
     }
   }

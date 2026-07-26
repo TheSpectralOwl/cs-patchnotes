@@ -489,7 +489,7 @@ describe("archive API", () => {
     expect((await app.inject("/api/search?q=bravo")).json().hits).toHaveLength(0);
   });
 
-  it("uses an override only while its evidence revision remains selected", async () => {
+  it("keeps an override effective after later source revisions", async () => {
     const contentDir = contentFixture([]);
     const options = {
       gid: "9",
@@ -507,9 +507,9 @@ describe("archive API", () => {
     expect((await app.inject("/api/search?q=curated")).json().hits).toHaveLength(1);
     writeHistory(contentDir, { ...options, latest: 1 });
     expect((await reload(app)).statusCode).toBe(200);
-    expect((await app.inject("/api/search?q=latest")).json().hits).toHaveLength(1);
-    expect((await app.inject("/api/search?q=curated")).json().hits).toHaveLength(0);
-    expect((await app.inject("/api/notes/2024-01-01-override.md")).json()).toMatchObject({ body: expect.stringContaining("Latest source smoke wording") });
+    expect((await app.inject("/api/search?q=latest")).json().hits).toHaveLength(0);
+    expect((await app.inject("/api/search?q=curated")).json().hits).toHaveLength(1);
+    expect((await app.inject("/api/notes/2024-01-01-override.md")).json()).toMatchObject({ body: expect.stringContaining("Curated smoke wording") });
     writeHistory(contentDir, { ...options, latest: 0 });
     expect((await reload(app)).statusCode).toBe(200);
     expect((await app.inject("/api/search?q=curated")).json().hits).toHaveLength(1);
