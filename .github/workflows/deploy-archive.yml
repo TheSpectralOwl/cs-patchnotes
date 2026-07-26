@@ -1,10 +1,24 @@
 name: Deploy Archive API
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-archive.yml"
+      - "docker-compose.archive.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "pipeline/**"
+      - "packages/archive-api/**"
+      - "tools/activate-content.cjs"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: archive-api-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -38,6 +52,13 @@ jobs:
               git -C "$content_repo" fetch --quiet origin main
             fi
             test -f "$archive_dir/.env"
+            if ! command -v node >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then
+              . "$HOME/.nvm/nvm.sh"
+            fi
+            command -v node >/dev/null 2>&1 || {
+              echo "Node.js is unavailable to the deployment user." >&2
+              exit 127
+            }
             mkdir -p "$revision_root/worktrees"
             if [ ! -f "$revision_root/active" ]; then
               sha="$(git -C "$content_repo" rev-parse origin/main)"
@@ -48,5 +69,19 @@ jobs:
               printf '%s\n' "$sha" > "$marker"
               mv "$marker" "$revision_root/active"
             fi
+            sha="$(tr -d '\n' < "$revision_root/active")"
+            candidate="$revision_root/worktrees/$sha"
+            test -d "$candidate"
+            CONTENT_DIR="$candidate" node "$archive_dir/pipeline/verify.cjs"
             cd "$archive_dir"
             CONTENT_REVISION_ROOT="$revision_root" docker compose -f docker-compose.archive.yml --profile vps up --build -d
+            CONTENT_SHA="$sha" node -e '
+              const expected = process.env.CONTENT_SHA;
+              fetch("http://127.0.0.1:3001/health")
+                .then(async (response) => {
+                  if (!response.ok) throw new Error(`health request failed: ${response.status}`);
+                  const health = await response.json();
+                  if (health?.ok !== true || health.content_sha !== expected) throw new Error("deployed API did not confirm the active content SHA");
+                })
+                .catch((error) => { console.error(error.message); process.exitCode = 1; });
+            '
